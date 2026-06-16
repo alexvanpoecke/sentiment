@@ -14,14 +14,14 @@ from statistics import pstdev
 
 from ..config import Settings, get_settings
 from ..features.align import add_quarters, quarter_of
-from ..models import DriverContribution, Entity, TriangulationResult
+from ..models import DriverContribution, Entity, Signal, TriangulationResult
 from ..registry import get_connector
 from .forecast import (
     DEFAULT_DRIVERS,
     _load_driver,
     _revenue_levels_and_yoy,
     forecast_kpi,
-    resolve_and_revenue,
+    resolve_or_use,
 )
 
 
@@ -46,11 +46,15 @@ def triangulate(
     min_n: int = 6,
     lag_by: str = "skill",
     sign: str = "any",
+    entity: Entity | None = None,
+    revenue: Signal | None = None,
     store=None,
     settings: Settings | None = None,
 ) -> tuple[Entity, TriangulationResult]:
     settings = settings or get_settings()
-    entity, revenue = resolve_and_revenue(query, quarters=quarters, store=store, settings=settings)
+    entity, revenue = resolve_or_use(
+        query, entity, revenue, quarters=quarters, store=store, settings=settings
+    )
     levels = _revenue_levels_and_yoy(revenue)[0]
 
     if drivers is None:

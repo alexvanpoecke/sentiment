@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .config import REPORTS_DIR, get_settings
-from .registry import all_connectors, get_connector
+from .registry import all_connectors, fetch_entity_signal
 
 app = typer.Typer(
     add_completion=False,
@@ -87,23 +87,10 @@ def signal(
     settings = get_settings()
     try:
         ent = _resolve(query)
-        conn = get_connector(source, settings=settings)
-        if source == "edgar":
-            sigs = conn.fetch(cik=ent.cik, query=query, metric="revenue")
-        elif source == "google_trends":
-            sigs = conn.fetch(term=term or (ent.seed_terms[0] if ent.seed_terms else ent.short_name), geo=geo, quarters=quarters)
-        elif source == "wikipedia":
-            sigs = conn.fetch(page=page or ent.name or ent.short_name)
-        elif source == "fred":
-            sigs = conn.fetch(series_id=term)
-        elif source == "gdelt":
-            sigs = conn.fetch(query=term or ent.short_name, quarters=quarters)
-        elif source == "reddit":
-            sigs = conn.fetch(query=term or ent.short_name)
-        elif source == "greenhouse":
-            sigs = conn.fetch(board=board or term)
-        else:
-            sigs = conn.fetch(term=term, page=page, query=query)
+        sigs = fetch_entity_signal(
+            source, ent, settings=settings, term=term, page=page, board=board,
+            geo=geo, quarters=quarters,
+        )
     except Exception as e:  # noqa: BLE001
         raise _fail(str(e))
 
@@ -291,7 +278,9 @@ def refresh(
         None, help="Comma-separated drivers (default: wikipedia,gdelt; trends rate-limits in bulk)"
     ),
     geo: str = typer.Option("US"),
-    quarters: int = typer.Option(16, help="History window (quarters) to capture per series"),
+    quarters: Optional[int] = typer.Option(
+        None, help="History window (quarters) per series; default: watchlist value or 16"
+    ),
 ) -> None:
     """Capture revenue + drivers for a watchlist into the point-in-time panel.
 
@@ -330,9 +319,12 @@ def refresh(
 
 @app.command()
 def panel(
-    entity: Optional[str] = typer.Argument(None, help="Filter to one entity key (ticker)"),
+    entity: Optional[str] = typer.Argument(
+        None, help="Filter to one entity key — the resolved ticker (e.g. WGO), not a company name"
+    ),
 ) -> None:
     """Show point-in-time panel coverage: periods and vintages captured so far."""
+    from .reports.render import capture_window
     from .store import get_store
 
     rows = get_store().panel_summary(entity.strip().upper() if entity else None)
@@ -348,14 +340,9 @@ def panel(
     ):
         t.add_column(col, justify=justify)
     for r in rows:
-        window = (
-            f"{r['first_capture']} → {r['last_capture']}"
-            if r["first_capture"] != r["last_capture"]
-            else r["first_capture"]
-        )
         t.add_row(
             r["entity_key"], r["source"], r["metric"], r["geo"] or "",
-            str(r["n_obs"]), str(r["n_vintages"]), window,
+            str(r["n_obs"]), str(r["n_vintages"]), capture_window(r),
         )
     console.print(t)
 

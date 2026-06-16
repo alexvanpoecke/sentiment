@@ -12,6 +12,7 @@ from __future__ import annotations
 from ..config import Settings, get_settings
 from ..models import Entity, MultiFactorResult, TriangulationResult
 from ..store import get_store
+from .forecast import resolve_and_revenue
 from .multifactor import run_multifactor
 from .triangulate import triangulate
 
@@ -38,11 +39,16 @@ def build_report(
     settings = settings or get_settings()
     store = store if store is not None else get_store()
 
+    # Resolve + fetch revenue once, then thread the result into both workflows so
+    # entity resolution and the EDGAR companyfacts parse don't run twice per dossier.
+    entity, revenue = resolve_and_revenue(query, quarters=quarters, store=store, settings=settings)
+
     common = dict(
         drivers=drivers, geo=geo, max_lag=max_lag, quarters=quarters,
-        alpha=alpha, min_n=min_n, lag_by=lag_by, sign=sign, store=store, settings=settings,
+        alpha=alpha, min_n=min_n, lag_by=lag_by, sign=sign,
+        entity=entity, revenue=revenue, store=store, settings=settings,
     )
-    entity, tri = triangulate(query, **common)
-    _entity2, mf = run_multifactor(query, seasonal=seasonal, **common)
+    _, tri = triangulate(query, **common)
+    _, mf = run_multifactor(query, seasonal=seasonal, **common)
     panel_rows = store.panel_summary(entity.key)
     return entity, tri, mf, panel_rows

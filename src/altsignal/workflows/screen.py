@@ -10,10 +10,7 @@ from __future__ import annotations
 
 from ..config import Settings, get_settings
 from ..models import ScreenRow
-from .forecast import _load_driver, forecast_kpi, resolve_and_revenue
-
-# Free, scalable defaults (Google Trends rate-limits hard in bulk -> opt-in only).
-DEFAULT_DRIVERS = ["wikipedia", "gdelt"]
+from .forecast import SCALABLE_DRIVERS, _load_driver, forecast_kpi, resolve_and_revenue
 
 
 def _rank_key(row: ScreenRow) -> tuple[bool, float]:
@@ -34,7 +31,7 @@ def screen(
     settings: Settings | None = None,
 ) -> list[ScreenRow]:
     settings = settings or get_settings()
-    drivers = drivers or list(DEFAULT_DRIVERS)
+    drivers = drivers or list(SCALABLE_DRIVERS)
     rows: list[ScreenRow] = []
 
     for ticker in tickers:

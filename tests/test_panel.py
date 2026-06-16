@@ -86,6 +86,22 @@ def test_same_day_rerun_is_idempotent(store):
     assert asof.as_dict()[date(2025, 3, 31)] == 1010.0
 
 
+def test_as_of_filing_date_beats_capture_date(store):
+    # Revenue became public on its filing date (2025-08-05) but we only captured it
+    # on a later refresh (2025-09-01). A backtest "as of 2025-08-10" must SEE it,
+    # because it was knowable from the filing date — not gated on when we ran refresh.
+    sig = Signal(
+        entity_key="WGO", source="edgar", metric="revenue",
+        observations=[Observation(ts=date(2025, 6, 30), value=1000.0, as_of=date(2025, 8, 5))],
+    )
+    store.record_panel("WGO", sig, captured_at=date(2025, 9, 1))
+
+    known = store.load_panel_as_of("WGO", "edgar", "revenue", None, date(2025, 8, 10))
+    assert known is not None and known.as_dict()[date(2025, 6, 30)] == 1000.0
+    # Before the filing date it was not yet public, even though it predates capture.
+    assert store.load_panel_as_of("WGO", "edgar", "revenue", None, date(2025, 8, 1)) is None
+
+
 def test_geo_is_distinguished(store):
     store.record_panel("WGO", _sig("google_trends", "interest", [(date(2025, 3, 31), 70.0)], geo="US"), date(2025, 7, 1))
     store.record_panel("WGO", _sig("google_trends", "interest", [(date(2025, 3, 31), 40.0)], geo="GB"), date(2025, 7, 1))

@@ -40,8 +40,11 @@ def _trim_signal(sig: Signal, keep: int) -> Signal:
     )
 
 
-# Shared default driver set (triangulate/multifactor); screen overrides it.
+# Shared default driver set (triangulate/multifactor).
 DEFAULT_DRIVERS = ["google_trends", "wikipedia", "gdelt"]
+# Scalable free subset for bulk / scheduled use (screen, refresh): Google Trends
+# rate-limits hard in bulk, so it's opt-in there rather than a default.
+SCALABLE_DRIVERS = ["wikipedia", "gdelt"]
 
 
 def resolve_and_revenue(
@@ -56,6 +59,24 @@ def resolve_and_revenue(
         raise RuntimeError(f"Could not resolve {query!r} to a SEC filer.")
     revenue = _trim_signal(edgar.quarterly_revenue(entity.cik), keep=quarters + 5)
     return entity, revenue
+
+
+def resolve_or_use(
+    query: str,
+    entity: Entity | None,
+    revenue: Signal | None,
+    *,
+    quarters: int = 16,
+    store=None,
+    settings: Settings | None = None,
+) -> tuple[Entity, Signal]:
+    """Return a pre-resolved (entity, revenue) pair if both are supplied, else
+    resolve from ``query``. Lets a caller (e.g. the report builder) resolve once and
+    share the result across workflows, so the EDGAR resolve + companyfacts parse
+    doesn't run twice. Both must be passed together — one alone is ignored."""
+    if entity is not None and revenue is not None:
+        return entity, revenue
+    return resolve_and_revenue(query, quarters=quarters, store=store, settings=settings)
 
 
 def _revenue_levels_and_yoy(sig: Signal) -> tuple[dict[date, float], dict[date, float], int]:
@@ -257,6 +278,10 @@ def _wikipedia_page_candidates(entity: Entity, page: str | None) -> list[str]:
     # First word only (e.g. "Rivian")
     if words:
         add(words[0])
+    # Last resort: the raw SEC name. Covers filers whose name is entirely
+    # corporate-form/state tokens, where short_name collapses to empty and the
+    # candidates above would otherwise be []. (Restores the old `or entity.name`.)
+    add(entity.name or entity.query)
     return out
 
 

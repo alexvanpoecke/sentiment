@@ -18,10 +18,7 @@ from datetime import date
 from ..config import Settings, get_settings
 from ..models import RefreshCapture, RefreshResult, Signal
 from ..store import get_store
-from .forecast import _load_driver, resolve_and_revenue
-
-# Scalable free defaults (Google Trends rate-limits in bulk -> opt-in per run).
-DEFAULT_DRIVERS = ["wikipedia", "gdelt"]
+from .forecast import SCALABLE_DRIVERS, _load_driver, resolve_and_revenue
 
 
 def load_watchlist(settings: Settings | None = None) -> dict:
@@ -39,7 +36,7 @@ def refresh(
     *,
     drivers: list[str] | None = None,
     geo: str = "US",
-    quarters: int = 16,
+    quarters: int | None = None,
     captured_at: date | None = None,
     store=None,
     settings: Settings | None = None,
@@ -56,8 +53,9 @@ def refresh(
 
     wl = load_watchlist(settings)
     tickers = tickers or wl.get("tickers") or []
-    drivers = drivers or wl.get("drivers") or list(DEFAULT_DRIVERS)
-    quarters = quarters or wl.get("quarters", 16)
+    drivers = drivers or wl.get("drivers") or list(SCALABLE_DRIVERS)
+    # `is None` (not falsy): an explicit quarters=0 must not silently become 16.
+    quarters = quarters if quarters is not None else wl.get("quarters", 16)
     tickers = [t.strip().upper() for t in tickers if t and t.strip()]
 
     res = RefreshResult(captured_at=captured_at, tickers=tickers)
@@ -81,7 +79,12 @@ def refresh(
 
         _capture(res, store, entity.key, revenue, captured_at)
         for drv in drivers:
-            drv_term = entity.macro_series[0] if drv == "fred" and entity.macro_series else None
+            drv_term = None
+            if drv == "fred":
+                if not entity.macro_series:  # nothing to fetch — skip, don't fail every run
+                    res.notes.append(f"{entity.key}: skipped fred (no mapped macro series).")
+                    continue
+                drv_term = entity.macro_series[0]
             try:
                 sig, _label = _load_driver(
                     entity, drv, drv_term, None, geo, quarters, store, settings

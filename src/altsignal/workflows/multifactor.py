@@ -19,7 +19,7 @@ from .forecast import (
     _driver_quarterly_yoy,
     _load_driver,
     _revenue_levels_and_yoy,
-    resolve_and_revenue,
+    resolve_or_use,
 )
 
 _SEASON_QUARTERS = (1, 2, 3)  # Q1/Q2/Q3 dummies; Q4 is the baseline
@@ -190,11 +190,15 @@ def run_multifactor(
     lag_by: str = "skill",
     sign: str = "any",
     seasonal: bool = False,
+    entity: Entity | None = None,
+    revenue: Signal | None = None,
     store=None,
     settings: Settings | None = None,
 ) -> tuple[Entity, MultiFactorResult]:
     settings = settings or get_settings()
-    entity, revenue = resolve_and_revenue(query, quarters=quarters, store=store, settings=settings)
+    entity, revenue = resolve_or_use(
+        query, entity, revenue, quarters=quarters, store=store, settings=settings
+    )
 
     drivers = drivers or list(DEFAULT_DRIVERS)
     loaded: list[tuple[Signal, str]] = []

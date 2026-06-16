@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS observations (
 -- looked like "as of" a past date (avoiding look-ahead bias from later revisions
 -- — Google Trends rescaling, GDELT backfill, EDGAR restatements, etc.).
 -- `geo` is '' (not NULL) so it participates cleanly in the primary key.
+-- `as_of` is the date the observation actually became public (EDGAR filing date,
+-- article publish date) when the connector knows it; `captured_at` is when *we*
+-- recorded it. `knowable_at` = COALESCE(as_of, captured_at) is the one canonical
+-- "date this became knowable" used for reconstruction — defined once, here, and
+-- indexed so the latest-vintage lookup is index-served. NULL as_of falls back to
+-- captured_at, so history stays honest even for data predating our first refresh.
 CREATE TABLE IF NOT EXISTS panel (
     entity_key  TEXT NOT NULL,
     source      TEXT NOT NULL,
@@ -59,11 +65,16 @@ CREATE TABLE IF NOT EXISTS panel (
     geo         TEXT NOT NULL DEFAULT '',
     ts          TEXT NOT NULL,
     value       REAL NOT NULL,
+    as_of       TEXT,
     captured_at TEXT NOT NULL,
+    knowable_at TEXT GENERATED ALWAYS AS (COALESCE(as_of, captured_at)) VIRTUAL,
     PRIMARY KEY (entity_key, source, metric, geo, ts, captured_at)
 );
-CREATE INDEX IF NOT EXISTS panel_lookup ON panel(entity_key, source, metric, geo, ts);
+CREATE INDEX IF NOT EXISTS panel_lookup ON panel(entity_key, source, metric, geo, ts, knowable_at);
 """
+
+# Bump when adding a _migrate() step; gates migration so it runs once, not per process.
+_SCHEMA_VERSION = 1
 
 
 class Store:
@@ -75,7 +86,35 @@ class Store:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self._lock = threading.Lock()
         self.conn.executescript(_SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """One-time, version-gated upgrades for DBs created by an earlier schema.
+
+        Gated on PRAGMA user_version (a single header read), so an up-to-date DB
+        skips the catalog scan entirely instead of paying it every process start.
+        """
+        if self.conn.execute("PRAGMA user_version").fetchone()[0] >= _SCHEMA_VERSION:
+            return
+        # v0 -> v1: panel gained `as_of` and the `knowable_at` generated column, and
+        # its index moved onto knowable_at. CREATE TABLE/INDEX IF NOT EXISTS won't
+        # alter a pre-existing panel, so backfill here (no-op on a fresh schema).
+        # table_xinfo (not table_info) so the VIRTUAL generated column is listed.
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_xinfo(panel)").fetchall()}
+        if cols and "as_of" not in cols:
+            self.conn.execute("ALTER TABLE panel ADD COLUMN as_of TEXT")
+        if cols and "knowable_at" not in cols:
+            self.conn.execute(
+                "ALTER TABLE panel ADD COLUMN knowable_at TEXT "
+                "GENERATED ALWAYS AS (COALESCE(as_of, captured_at)) VIRTUAL"
+            )
+            self.conn.execute("DROP INDEX IF EXISTS panel_lookup")  # was on raw captured_at
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS panel_lookup ON panel"
+                "(entity_key, source, metric, geo, ts, knowable_at)"
+            )
+        self.conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     # ------------------------------------------------------------------ cache
     def get_or_fetch_bytes(
@@ -184,14 +223,18 @@ class Store:
     def record_panel(self, entity_key: str, sig: Signal, captured_at: date) -> int:
         """Append a vintage of ``sig`` under ``entity_key``, stamped ``captured_at``.
 
-        Idempotent within a (entity, source, metric, geo, ts, captured_at) key:
-        re-running on the same day overwrites that day's value rather than
-        duplicating it. Returns the number of observations recorded.
+        Each observation also carries its own ``as_of`` (the date it became public,
+        e.g. an EDGAR filing date) when the connector provides one; reconstruction
+        prefers it over ``captured_at``. Idempotent within a
+        (entity, source, metric, geo, ts, captured_at) key: re-running on the same
+        day overwrites that day's value rather than duplicating it. Returns the
+        number of observations recorded.
         """
         cap = captured_at.isoformat()
         geo = sig.geo or ""
         rows = [
-            (entity_key, sig.source, sig.metric, geo, o.ts.isoformat(), float(o.value), cap)
+            (entity_key, sig.source, sig.metric, geo, o.ts.isoformat(), float(o.value),
+             o.as_of.isoformat() if o.as_of else None, cap)
             for o in sig.observations
         ]
         if not rows:
@@ -199,7 +242,8 @@ class Store:
         with self._lock:
             self.conn.executemany(
                 "INSERT OR REPLACE INTO panel"
-                "(entity_key, source, metric, geo, ts, value, captured_at) VALUES (?,?,?,?,?,?,?)",
+                "(entity_key, source, metric, geo, ts, value, as_of, captured_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
                 rows,
             )
             self.conn.commit()
@@ -216,26 +260,37 @@ class Store:
         """Reconstruct a signal as it was known on ``as_of``.
 
         For each observation period, take the value from the latest vintage whose
-        ``captured_at <= as_of`` — i.e. the most recent reading available on that
-        date, ignoring revisions captured later. This is the point-in-time view a
-        backtest must use to avoid look-ahead bias. Returns None if nothing was
-        captured for this series on or before ``as_of``.
+        knowable-by date ``COALESCE(as_of, captured_at) <= as_of`` — i.e. the most
+        recent reading public on that date, preferring the observation's true
+        publish/filing date and falling back to when we captured it. Revisions
+        published later are ignored. This is the point-in-time view a backtest must
+        use to avoid look-ahead bias. Returns None if nothing was knowable on or
+        before ``as_of``.
         """
         g = geo or ""
         cap = as_of.isoformat()
         rows = self.conn.execute(
-            "SELECT ts, value FROM panel p "
-            "WHERE entity_key=? AND source=? AND metric=? AND geo=? AND captured_at<=? "
-            "AND captured_at=("
-            "  SELECT MAX(captured_at) FROM panel "
+            "SELECT ts, value, knowable_at FROM panel p "
+            "WHERE entity_key=? AND source=? AND metric=? AND geo=? "
+            "AND knowable_at<=? "
+            "AND knowable_at=("
+            "  SELECT MAX(knowable_at) FROM panel "
             "  WHERE entity_key=p.entity_key AND source=p.source AND metric=p.metric "
-            "  AND geo=p.geo AND ts=p.ts AND captured_at<=?"
+            "  AND geo=p.geo AND ts=p.ts AND knowable_at<=?"
             ") ORDER BY ts",
             (entity_key, source, metric, g, cap, cap),
         ).fetchall()
         if not rows:
             return None
-        obs = [Observation(ts=date.fromisoformat(r["ts"]), value=r["value"], as_of=as_of) for r in rows]
+        # Preserve the true vintage (filing/publish or capture date) as each obs's
+        # as_of, rather than flattening it to the query date.
+        obs = [
+            Observation(
+                ts=date.fromisoformat(r["ts"]), value=r["value"],
+                as_of=date.fromisoformat(r["knowable_at"]),
+            )
+            for r in rows
+        ]
         return Signal(
             entity_key=entity_key, source=source, metric=metric,
             geo=geo, observations=obs,

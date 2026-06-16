@@ -401,12 +401,22 @@ def _consensus_verdict(tri: TriangulationResult, mf: MultiFactorResult) -> str:
     vals = [v for v in (tri.ensemble_yoy, mf.predicted_yoy) if v is not None]
     if not vals:
         return "No forecast could be produced from the available signals."
-    direction = "growth" if sum(vals) / len(vals) >= 0 else "decline"
-    agree = "agree" if all((v >= 0) == (vals[0] >= 0) for v in vals) else "disagree on direction"
+    mean = sum(vals) / len(vals)
+    direction = "growth" if mean > 0 else "decline" if mean < 0 else "flat"
+    if len(vals) < 2:  # only one method produced a number — don't claim agreement
+        which = "ensemble" if tri.ensemble_yoy is not None else "multifactor"
+        return f"Only the {which} produced a forecast: {pct(vals[0])} YoY ({direction})."
+    agree = "agree" if (vals[0] >= 0) == (vals[1] >= 0) else "disagree on direction"
     return (
         f"Ensemble {pct(tri.ensemble_yoy)} and multifactor {pct(mf.predicted_yoy)} "
         f"YoY — the two methods {agree} ({direction})."
     )
+
+
+def capture_window(row: dict) -> str:
+    """Format a panel_summary row's capture window: one date, or first → last."""
+    first, last = row["first_capture"], row["last_capture"]
+    return f"{first} → {last}" if first != last else first
 
 
 def build_dossier_markdown(
@@ -470,13 +480,8 @@ def build_dossier_markdown(
         A("| source | metric | geo | periods | vintages | capture window |")
         A("|:--|:--|:--|--:|--:|:--|")
         for r in panel_rows:
-            window = (
-                f"{r['first_capture']} → {r['last_capture']}"
-                if r["first_capture"] != r["last_capture"]
-                else r["first_capture"]
-            )
             A(f"| {r['source']} | {r['metric']} | {r['geo'] or '—'} | {r['n_obs']} | "
-              f"{r['n_vintages']} | {window} |")
+              f"{r['n_vintages']} | {capture_window(r)} |")
         A("")
     else:
         A("_No panel history yet for this company. Run `altsignal refresh "

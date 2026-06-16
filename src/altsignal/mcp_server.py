@@ -31,7 +31,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - import-time guard
 
 from .config import get_settings
 from .models import Entity, Signal
-from .registry import all_connectors, get_connector
+from .registry import all_connectors, fetch_entity_signal
 
 mcp = FastMCP(
     "altsignal",
@@ -159,25 +159,10 @@ def get_signal(
 
     settings = get_settings()
     ent = _resolve(query)
-    conn = get_connector(source, settings=settings)
-    if source == "edgar":
-        sigs = conn.fetch(cik=ent.cik, query=query, metric="revenue")
-    elif source == "google_trends":
-        t = term or (ent.seed_terms[0] if ent.seed_terms else ent.short_name)
-        sigs = conn.fetch(term=t, geo=geo, quarters=quarters)
-    elif source == "wikipedia":
-        sigs = conn.fetch(page=page or ent.name or ent.short_name)
-    elif source == "fred":
-        sigs = conn.fetch(series_id=term)
-    elif source == "gdelt":
-        sigs = conn.fetch(query=term or ent.short_name, quarters=quarters)
-    elif source == "reddit":
-        sigs = conn.fetch(query=term or ent.short_name)
-    elif source == "greenhouse":
-        sigs = conn.fetch(board=board or term)
-    else:
-        sigs = conn.fetch(term=term, page=page, query=query)
-
+    sigs = fetch_entity_signal(
+        source, ent, settings=settings, term=term, page=page, board=board,
+        geo=geo, quarters=quarters,
+    )
     return {
         "entity": {"ticker": ent.ticker, "name": ent.name, "short_name": ent.short_name},
         "signals": [_signal_dict(s, limit) for s in sigs],
