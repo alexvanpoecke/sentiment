@@ -124,6 +124,8 @@ def forecast(
     quarters: int = typer.Option(16, help="History window (quarters) for the correlation"),
     alpha: float = typer.Option(0.20, help="Prediction interval level = 1 - alpha"),
     min_n: int = typer.Option(6, help="Min overlapping points for a lag to qualify"),
+    lag_by: str = typer.Option("skill", help="Lag selection: 'skill' (out-of-sample) or 'corr' (max |r|)"),
+    sign: str = typer.Option("any", help="Constrain lag to 'any' | 'positive' | 'negative' correlation"),
     driver_csv: Optional[str] = typer.Option(None, help="Use a 2-col date,value CSV as the driver"),
     fallback: bool = typer.Option(True, help="Fall back to Wikipedia if Google Trends is blocked"),
     out_dir: Optional[str] = typer.Option(None, help="Where to write the Markdown memo"),
@@ -135,7 +137,7 @@ def forecast(
 
     kw = dict(
         term=term, page=page, geo=geo, max_lag=max_lag, quarters=quarters,
-        alpha=alpha, min_n=min_n, driver_csv=driver_csv,
+        alpha=alpha, min_n=min_n, lag_by=lag_by, sign=sign, driver_csv=driver_csv,
     )
     try:
         ent, res = run_forecast(query, driver=driver, **kw)

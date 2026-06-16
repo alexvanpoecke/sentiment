@@ -32,3 +32,26 @@ def test_lagged_pairs_alignment():
     assert len(xs) == len(ys) == len(qs) > 5
     # ys should equal 2*xs + 0.5 by construction
     assert all(abs(y - (2.0 * x + 0.5)) < 1e-9 for x, y in zip(xs, ys))
+
+
+def test_scan_lags_populates_skill_fields():
+    driver, target = _build()  # lag-2 perfect linear relationship
+    best, table = scan_lags(driver, target, max_lag=4, min_n=5)  # default lag_by="skill"
+    assert best == 2
+    chosen = next(ls for ls in table if ls.lag == 2)
+    assert chosen.folds > 0
+    assert chosen.model_mae is not None and chosen.naive_mae is not None
+    # a near-perfect model should clearly beat naive persistence out-of-sample
+    assert chosen.skill is not None and chosen.skill > 0.5
+
+
+def test_sign_filter_picks_expected_direction():
+    q0 = date(2016, 3, 31)
+    driver = {add_quarters(q0, i): math.sin(i) for i in range(24)}
+    target = {add_quarters(q0, i): -math.sin(i) for i in range(24)}  # lag 0 = perfect negative
+    # 'any' + corr -> strongest |r| is the lag-0 perfect NEGATIVE correlation
+    best_any, table = scan_lags(driver, target, max_lag=4, min_n=6, lag_by="corr", sign="any")
+    assert next(ls.r for ls in table if ls.lag == best_any) < 0
+    # constrained to positive -> must choose a positive-r lag instead
+    best_pos, table_pos = scan_lags(driver, target, max_lag=4, min_n=6, lag_by="corr", sign="positive")
+    assert next(ls.r for ls in table_pos if ls.lag == best_pos) > 0

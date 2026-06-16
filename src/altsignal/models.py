@@ -103,12 +103,16 @@ class Entity:
 
 @dataclass
 class LagStat:
-    """Correlation of driver-at-lag vs target, for one candidate lag."""
+    """Correlation + out-of-sample skill of driver-at-lag vs target, per lag."""
 
     lag: int
     r: float
     p_value: float
     n: int
+    folds: int = 0
+    model_mae: float | None = None
+    naive_mae: float | None = None
+    skill: float | None = None  # (naive_mae - model_mae) / naive_mae; >0 beats naive
 
 
 @dataclass

@@ -19,7 +19,7 @@ from ..config import Settings, get_settings
 from ..entities.resolver import resolve as resolve_entity
 from ..features.align import add_quarters, calendar_quarter_end, to_quarterly, yoy_quarterly
 from ..features.lag import lagged_pairs, scan_lags
-from ..features.stats import fit_ols, mean, pearson
+from ..features.stats import fit_ols
 from ..models import Entity, ForecastResult, Observation, Signal
 from ..registry import get_connector
 
@@ -73,6 +73,8 @@ def forecast_kpi(
     max_lag: int = 4,
     alpha: float = 0.20,
     min_n: int = 6,
+    lag_by: str = "skill",
+    sign: str = "any",
 ) -> ForecastResult:
     levels, target_yoy, collisions = _revenue_levels_and_yoy(kpi_signal)
     driver_yoy = _driver_quarterly_yoy(driver_signal)
@@ -90,6 +92,12 @@ def forecast_kpi(
         f"Revenue concept: {kpi_signal.meta.get('concept', 'n/a')}; "
         f"driver aggregated to quarters by mean; YoY is date-based (gap-safe)."
     )
+    res.notes.append(
+        "Lag chosen by "
+        + ("out-of-sample backtest skill" if lag_by == "skill" else "in-sample correlation")
+        + ("" if sign == "any" else f", constrained to {sign} correlation")
+        + "."
+    )
     if collisions:
         res.warnings.append(
             f"{collisions} fiscal quarter(s) collided onto the same calendar quarter "
@@ -102,9 +110,12 @@ def forecast_kpi(
         res.warnings.append("Not enough overlapping history to estimate a relationship.")
         return res
 
-    best_lag, table = scan_lags(driver_yoy, target_yoy, max_lag=max_lag, min_n=min_n)
+    best_lag, table = scan_lags(
+        driver_yoy, target_yoy, max_lag=max_lag, min_n=min_n, lag_by=lag_by, sign=sign
+    )
     res.lag_table = table
     res.best_lag = best_lag
+    chosen = next((ls for ls in table if ls.lag == best_lag), None)
 
     xs, ys, qs = lagged_pairs(driver_yoy, target_yoy, best_lag)
     res.n_obs = len(xs)
@@ -112,14 +123,29 @@ def forecast_kpi(
         res.warnings.append(f"Only {len(xs)} aligned points at lag {best_lag}; cannot fit.")
         return res
 
-    r, p, _ = pearson(xs, ys)
-    res.corr, res.corr_p = r, p
+    if chosen is not None:
+        res.corr, res.corr_p = chosen.r, chosen.p_value
+        if chosen.folds:  # backtest was already computed during the lag scan
+            res.backtest_n = chosen.folds
+            res.backtest_mae_yoy = chosen.model_mae
+            res.backtest_naive_mae_yoy = chosen.naive_mae
+
     if res.n_obs < min_n:
         res.warnings.append(
             f"Small sample (n={res.n_obs}); estimates are noisy. Treat as directional."
         )
-    if p > 0.10:
-        res.warnings.append(f"Correlation is weak / not significant (p={p:.2f}).")
+    # Multiple-testing caution: the winning lag was the best of (max_lag+1) candidates.
+    adj_p = min(1.0, res.corr_p * len(table))
+    if adj_p > 0.10:
+        res.warnings.append(
+            f"Correlation not significant after multiple-testing correction "
+            f"(Bonferroni x{len(table)}: adj p={adj_p:.2f})."
+        )
+    if lag_by == "skill" and chosen is not None and chosen.skill is not None and chosen.skill <= 0:
+        res.warnings.append(
+            "Best lag still loses to naive persistence out-of-sample (negative skill); "
+            "treat the forecast as low-confidence."
+        )
 
     try:
         reg = fit_ols(xs, ys)
@@ -152,26 +178,6 @@ def forecast_kpi(
             res.warnings.append("No year-ago revenue level available to convert YoY to a $ level.")
     else:
         res.warnings.append("No current driver reading at the required lag; cannot project forward.")
-
-    # --- walk-forward backtest vs naive persistence ---
-    # Naive = last year's YoY actual carried forward; look it up by DATE (the true
-    # prior calendar quarter), since `qs` can skip quarters with no driver reading.
-    # Only score folds where that prior quarter actually exists.
-    errs, naive = [], []
-    for i in range(4, len(xs)):
-        prev_q = add_quarters(qs[i], -1)
-        if prev_q not in target_yoy:
-            continue
-        try:
-            reg_i = fit_ols(xs[:i], ys[:i])
-        except ValueError:
-            continue
-        errs.append(abs(reg_i.predict(xs[i])[0] - ys[i]))
-        naive.append(abs(target_yoy[prev_q] - ys[i]))
-    if errs:
-        res.backtest_n = len(errs)
-        res.backtest_mae_yoy = mean(errs)
-        res.backtest_naive_mae_yoy = mean(naive)
 
     return res
 
@@ -240,6 +246,8 @@ def run_forecast(
     quarters: int = 16,
     alpha: float = 0.20,
     min_n: int = 6,
+    lag_by: str = "skill",
+    sign: str = "any",
     driver_csv: str | None = None,
     store=None,
     settings: Settings | None = None,
@@ -269,5 +277,7 @@ def run_forecast(
         max_lag=max_lag,
         alpha=alpha,
         min_n=min_n,
+        lag_by=lag_by,
+        sign=sign,
     )
     return entity, result

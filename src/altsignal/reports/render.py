@@ -74,10 +74,12 @@ def render_console(entity: Entity, res: ForecastResult, console: Console | None 
         t.add_column("n", justify="right")
         t.add_column("corr r", justify="right")
         t.add_column("p-value", justify="right")
+        t.add_column("skill (oos)", justify="right")
         for ls in res.lag_table:
             style = "bold green" if ls.lag == res.best_lag else ""
             r = "n/a" if ls.r != ls.r else f"{ls.r:+.3f}"
-            t.add_row(str(ls.lag), str(ls.n), r, f"{ls.p_value:.3f}", style=style)
+            sk = "n/a" if ls.skill is None else f"{ls.skill * 100:+.0f}%"
+            t.add_row(str(ls.lag), str(ls.n), r, f"{ls.p_value:.3f}", sk, style=style)
         console.print(t)
 
     fit = Table(show_header=False, box=None)
@@ -122,11 +124,12 @@ def build_markdown(entity: Entity, res: ForecastResult) -> str:
     A(f"- **Aligned quarters:** {res.n_obs}\n")
 
     A("## Lag scan\n")
-    A("| lag (q) | n | corr r | p-value | |")
-    A("|--:|--:|--:|--:|:--|")
+    A("| lag (q) | n | corr r | p-value | skill (oos) | |")
+    A("|--:|--:|--:|--:|--:|:--|")
     for ls in res.lag_table:
         r = "n/a" if ls.r != ls.r else f"{ls.r:+.3f}"
-        A(f"| {ls.lag} | {ls.n} | {r} | {ls.p_value:.3f} | {'**best**' if ls.lag == res.best_lag else ''} |")
+        sk = "n/a" if ls.skill is None else f"{ls.skill * 100:+.0f}%"
+        A(f"| {ls.lag} | {ls.n} | {r} | {ls.p_value:.3f} | {sk} | {'**best**' if ls.lag == res.best_lag else ''} |")
     A("")
 
     A("## Fit & backtest\n")
