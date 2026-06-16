@@ -29,12 +29,13 @@ dependencies = [
 # Swap the pure-python numerics for the real stack once you want heavier models.
 pandas = ["pandas>=2.2", "numpy>=1.26"]
 ml = ["scikit-learn>=1.4", "statsmodels>=0.14"]
-# Future: expose connectors/workflows as MCP tools so Claude can drive it.
+# Expose connectors/workflows as MCP tools so Claude can drive it (altsignal-mcp).
 mcp = ["mcp>=1.0"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6"]
 
 [project.scripts]
 altsignal = "altsignal.cli:app"
+altsignal-mcp = "altsignal.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

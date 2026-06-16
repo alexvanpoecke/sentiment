@@ -85,6 +85,30 @@ altsignal forecast WGO --driver wikipedia        # uses Wikipedia pageviews as t
 
 Every `forecast` run also writes a Markdown research memo to `reports_out/`.
 
+### MCP server
+
+Expose every connector and workflow as MCP tools so an MCP client (e.g. Claude) can
+drive altsignal directly. It's behind the optional `mcp` extra so the core stays
+pure-Python:
+
+```powershell
+.\.venv\Scripts\python -m pip install -e ".[mcp]"
+altsignal-mcp     # speaks MCP over stdio
+```
+
+Tools: `list_sources`, `resolve_company`, `get_signal`, `forecast`, `triangulate`,
+`screen`, `multifactor` — each wraps the same workflow function the CLI calls and
+returns structured JSON. Point your client at the `altsignal-mcp` command (stdio
+transport). Example Claude Desktop config:
+
+```json
+{
+  "mcpServers": {
+    "altsignal": { "command": "altsignal-mcp" }
+  }
+}
+```
+
 ## Status / roadmap
 
 **Phase 1 (this scaffold):** core framework + working end-to-end slice — EDGAR revenue,
@@ -98,8 +122,9 @@ Cloudflare Radar / app-store ranks; LLM-assisted entity enrichment (seed terms, 
 bill-of-lading (ImportYeti), SimilarWeb traffic; triangulation, beat/miss pre-announcement
 screen, cross-sectional ranking workflows.
 
-**Phase 4 (orchestration):** MCP server so Claude can drive every connector/workflow as a
-tool; scheduled signal refresh to build a real point-in-time panel; report builder.
+**Phase 4 (orchestration):** ✅ MCP server (`altsignal-mcp`) so Claude can drive every
+connector/workflow as a tool. Still to come: scheduled signal refresh to build a real
+point-in-time panel; report builder.
 
 ## Legal / data posture
 
