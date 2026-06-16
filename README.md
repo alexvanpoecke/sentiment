@@ -85,6 +85,18 @@ altsignal forecast WGO --driver wikipedia        # uses Wikipedia pageviews as t
 
 Every `forecast` run also writes a Markdown research memo to `reports_out/`.
 
+```powershell
+# One combined dossier: triangulation + multifactor + panel coverage, in one memo
+altsignal report WGO
+
+# Build a point-in-time panel: capture dated signal vintages for a watchlist.
+# Run on a schedule (Task Scheduler / cron) so backtests use only what was
+# knowable at each past date. Tickers default to configs/watchlist.toml.
+altsignal refresh WGO,THO,LCII
+altsignal refresh                 # uses configs/watchlist.toml
+altsignal panel                   # show what's been captured so far
+```
+
 ### MCP server
 
 Expose every connector and workflow as MCP tools so an MCP client (e.g. Claude) can
@@ -123,8 +135,9 @@ bill-of-lading (ImportYeti), SimilarWeb traffic; triangulation, beat/miss pre-an
 screen, cross-sectional ranking workflows.
 
 **Phase 4 (orchestration):** ✅ MCP server (`altsignal-mcp`) so Claude can drive every
-connector/workflow as a tool. Still to come: scheduled signal refresh to build a real
-point-in-time panel; report builder.
+connector/workflow as a tool; ✅ scheduled signal refresh (`altsignal refresh`) that records
+dated vintages into a point-in-time panel for look-ahead-free backtests; ✅ report builder
+(`altsignal report`) that assembles a combined company dossier.
 
 ## Legal / data posture
 

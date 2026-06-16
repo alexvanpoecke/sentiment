@@ -46,6 +46,23 @@ CREATE TABLE IF NOT EXISTS observations (
     as_of       TEXT,
     PRIMARY KEY (signal_id, ts)
 );
+
+-- Append-only point-in-time panel: every refresh stamps each observation with
+-- the date it was captured, so backtests can reconstruct exactly what a signal
+-- looked like "as of" a past date (avoiding look-ahead bias from later revisions
+-- — Google Trends rescaling, GDELT backfill, EDGAR restatements, etc.).
+-- `geo` is '' (not NULL) so it participates cleanly in the primary key.
+CREATE TABLE IF NOT EXISTS panel (
+    entity_key  TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    metric      TEXT NOT NULL,
+    geo         TEXT NOT NULL DEFAULT '',
+    ts          TEXT NOT NULL,
+    value       REAL NOT NULL,
+    captured_at TEXT NOT NULL,
+    PRIMARY KEY (entity_key, source, metric, geo, ts, captured_at)
+);
+CREATE INDEX IF NOT EXISTS panel_lookup ON panel(entity_key, source, metric, geo, ts);
 """
 
 
@@ -162,6 +179,88 @@ class Store:
             observations=obs,
             meta=json.loads(row["meta_json"]) if row["meta_json"] else {},
         )
+
+    # ------------------------------------------------------- point-in-time panel
+    def record_panel(self, entity_key: str, sig: Signal, captured_at: date) -> int:
+        """Append a vintage of ``sig`` under ``entity_key``, stamped ``captured_at``.
+
+        Idempotent within a (entity, source, metric, geo, ts, captured_at) key:
+        re-running on the same day overwrites that day's value rather than
+        duplicating it. Returns the number of observations recorded.
+        """
+        cap = captured_at.isoformat()
+        geo = sig.geo or ""
+        rows = [
+            (entity_key, sig.source, sig.metric, geo, o.ts.isoformat(), float(o.value), cap)
+            for o in sig.observations
+        ]
+        if not rows:
+            return 0
+        with self._lock:
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO panel"
+                "(entity_key, source, metric, geo, ts, value, captured_at) VALUES (?,?,?,?,?,?,?)",
+                rows,
+            )
+            self.conn.commit()
+        return len(rows)
+
+    def load_panel_as_of(
+        self,
+        entity_key: str,
+        source: str,
+        metric: str,
+        geo: str | None,
+        as_of: date,
+    ) -> Signal | None:
+        """Reconstruct a signal as it was known on ``as_of``.
+
+        For each observation period, take the value from the latest vintage whose
+        ``captured_at <= as_of`` — i.e. the most recent reading available on that
+        date, ignoring revisions captured later. This is the point-in-time view a
+        backtest must use to avoid look-ahead bias. Returns None if nothing was
+        captured for this series on or before ``as_of``.
+        """
+        g = geo or ""
+        cap = as_of.isoformat()
+        rows = self.conn.execute(
+            "SELECT ts, value FROM panel p "
+            "WHERE entity_key=? AND source=? AND metric=? AND geo=? AND captured_at<=? "
+            "AND captured_at=("
+            "  SELECT MAX(captured_at) FROM panel "
+            "  WHERE entity_key=p.entity_key AND source=p.source AND metric=p.metric "
+            "  AND geo=p.geo AND ts=p.ts AND captured_at<=?"
+            ") ORDER BY ts",
+            (entity_key, source, metric, g, cap, cap),
+        ).fetchall()
+        if not rows:
+            return None
+        obs = [Observation(ts=date.fromisoformat(r["ts"]), value=r["value"], as_of=as_of) for r in rows]
+        return Signal(
+            entity_key=entity_key, source=source, metric=metric,
+            geo=geo, observations=obs,
+        )
+
+    def panel_summary(self, entity_key: str | None = None) -> list[dict]:
+        """Per-series coverage of the panel: observation span and vintage count.
+
+        Optionally filtered to one ``entity_key``. Each row reports how many
+        distinct periods and vintages have been captured and the capture window —
+        i.e. how much point-in-time history has accumulated.
+        """
+        sql = (
+            "SELECT entity_key, source, metric, geo, "
+            "COUNT(DISTINCT ts) AS n_obs, COUNT(DISTINCT captured_at) AS n_vintages, "
+            "MIN(ts) AS first_ts, MAX(ts) AS last_ts, "
+            "MIN(captured_at) AS first_capture, MAX(captured_at) AS last_capture "
+            "FROM panel "
+        )
+        params: tuple = ()
+        if entity_key is not None:
+            sql += "WHERE entity_key=? "
+            params = (entity_key,)
+        sql += "GROUP BY entity_key, source, metric, geo ORDER BY entity_key, source, metric, geo"
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
 
     def close(self) -> None:
         self.conn.close()

@@ -167,6 +167,41 @@ class ForecastResult:
 
 
 @dataclass
+class RefreshCapture:
+    """One (entity, source, metric) series captured into the point-in-time panel."""
+
+    entity_key: str
+    source: str
+    metric: str
+    geo: str | None = None
+    n_obs: int = 0
+    error: str | None = None
+
+
+@dataclass
+class RefreshResult:
+    """Summary of a scheduled panel refresh run."""
+
+    captured_at: date
+    tickers: list[str] = field(default_factory=list)
+    captures: list[RefreshCapture] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def n_ok(self) -> int:
+        return sum(1 for c in self.captures if c.error is None)
+
+    @property
+    def n_failed(self) -> int:
+        return sum(1 for c in self.captures if c.error is not None)
+
+    @property
+    def n_obs(self) -> int:
+        return sum(c.n_obs for c in self.captures)
+
+
+@dataclass
 class DriverContribution:
     """One driver's forecast within a triangulation ensemble."""
 

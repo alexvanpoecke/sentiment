@@ -14,6 +14,7 @@ from altsignal.models import DriverContribution, ForecastResult, LagStat  # noqa
 EXPECTED_TOOLS = {
     "list_sources", "resolve_company", "get_signal",
     "forecast", "triangulate", "screen", "multifactor",
+    "refresh_panel", "panel_status", "build_report",
 }
 
 

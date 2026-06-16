@@ -282,5 +282,129 @@ def multifactor(
     console.print(f"\n[dim]Memo written to {md_file}[/]")
 
 
+@app.command()
+def refresh(
+    tickers: Optional[str] = typer.Argument(
+        None, help="Comma-separated tickers; defaults to configs/watchlist.toml"
+    ),
+    drivers: Optional[str] = typer.Option(
+        None, help="Comma-separated drivers (default: wikipedia,gdelt; trends rate-limits in bulk)"
+    ),
+    geo: str = typer.Option("US"),
+    quarters: int = typer.Option(16, help="History window (quarters) to capture per series"),
+) -> None:
+    """Capture revenue + drivers for a watchlist into the point-in-time panel.
+
+    Run this on a schedule (cron / Task Scheduler) to accumulate a real as-of
+    history so backtests use only what was knowable at each past date.
+    """
+    from .workflows.refresh import refresh as _refresh
+
+    tk = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else None
+    drv = [d.strip() for d in drivers.split(",") if d.strip()] if drivers else None
+    try:
+        res = _refresh(tk, drivers=drv, geo=geo, quarters=quarters)
+    except Exception as e:  # noqa: BLE001
+        raise _fail(str(e))
+
+    t = Table(title=f"Panel refresh — captured {res.captured_at.isoformat()}", title_justify="left")
+    for col, justify in (
+        ("entity", "left"), ("source", "left"), ("metric", "left"),
+        ("geo", "left"), ("obs", "right"), ("status", "left"),
+    ):
+        t.add_column(col, justify=justify)
+    for c in res.captures:
+        ok = c.error is None
+        t.add_row(
+            c.entity_key, c.source, c.metric, c.geo or "", str(c.n_obs) if ok else "-",
+            "[green]ok[/]" if ok else f"[red]{c.error}[/]",
+        )
+    console.print(t)
+    console.print(
+        f"[dim]{res.n_ok} series captured ({res.n_obs} observations), "
+        f"{res.n_failed} failed across {len(res.tickers)} ticker(s).[/]"
+    )
+    for w in res.warnings:
+        console.print(f"[yellow]! {w}[/]")
+
+
+@app.command()
+def panel(
+    entity: Optional[str] = typer.Argument(None, help="Filter to one entity key (ticker)"),
+) -> None:
+    """Show point-in-time panel coverage: periods and vintages captured so far."""
+    from .store import get_store
+
+    rows = get_store().panel_summary(entity.strip().upper() if entity else None)
+    if not rows:
+        console.print(
+            "[yellow]Panel is empty.[/] Run [bold]altsignal refresh[/] to start capturing vintages."
+        )
+        return
+    t = Table(title="Point-in-time panel coverage", title_justify="left")
+    for col, justify in (
+        ("entity", "left"), ("source", "left"), ("metric", "left"), ("geo", "left"),
+        ("periods", "right"), ("vintages", "right"), ("capture window", "left"),
+    ):
+        t.add_column(col, justify=justify)
+    for r in rows:
+        window = (
+            f"{r['first_capture']} → {r['last_capture']}"
+            if r["first_capture"] != r["last_capture"]
+            else r["first_capture"]
+        )
+        t.add_row(
+            r["entity_key"], r["source"], r["metric"], r["geo"] or "",
+            str(r["n_obs"]), str(r["n_vintages"]), window,
+        )
+    console.print(t)
+
+
+@app.command()
+def report(
+    query: str = typer.Argument(..., help="Ticker or company name"),
+    drivers: Optional[str] = typer.Option(
+        None, help="Comma-separated drivers (default: google_trends,wikipedia,gdelt)"
+    ),
+    seasonal: bool = typer.Option(False, help="Add quarter-of-year dummies to the regression"),
+    geo: str = typer.Option("US"),
+    max_lag: int = typer.Option(4),
+    quarters: int = typer.Option(16),
+    alpha: float = typer.Option(0.20),
+    min_n: int = typer.Option(6),
+    lag_by: str = typer.Option("skill"),
+    sign: str = typer.Option("any"),
+    out_dir: Optional[str] = typer.Option(None, help="Where to write the Markdown dossier"),
+) -> None:
+    """Build one company dossier: triangulation + multifactor + panel coverage."""
+    from .reports.render import (
+        build_dossier_markdown,
+        render_multifactor,
+        render_triangulation,
+    )
+    from .workflows.report import build_report
+
+    drv = [d.strip() for d in drivers.split(",") if d.strip()] if drivers else None
+    try:
+        ent, tri, mf, panel_rows = build_report(
+            query, drivers=drv, seasonal=seasonal, geo=geo, max_lag=max_lag,
+            quarters=quarters, alpha=alpha, min_n=min_n, lag_by=lag_by, sign=sign,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise _fail(str(e))
+
+    render_triangulation(ent, tri, console)
+    render_multifactor(ent, mf, console)
+    console.print(
+        f"[dim]Panel: {len(panel_rows)} series tracked for {ent.ticker or ent.query}.[/]"
+    )
+
+    out_path = Path(out_dir) if out_dir else REPORTS_DIR
+    out_path.mkdir(parents=True, exist_ok=True)
+    md_file = out_path / f"{(ent.ticker or ent.query).upper()}_dossier.md"
+    md_file.write_text(build_dossier_markdown(ent, tri, mf, panel_rows), encoding="utf-8")
+    console.print(f"\n[dim]Dossier written to {md_file}[/]")
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()

@@ -10,7 +10,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ..features.align import quarter_of
-from ..models import Entity, ForecastResult, MultiFactorResult, ScreenRow, TriangulationResult
+from ..models import (
+    Entity,
+    ForecastResult,
+    MultiFactorResult,
+    ScreenRow,
+    TriangulationResult,
+)
 
 
 def quarter_label(d: date | None) -> str:
@@ -384,4 +390,108 @@ def build_multifactor_markdown(entity: Entity, res: MultiFactorResult) -> str:
         A("")
     A("---")
     A("_Multiple regression on public-data signals; small samples overfit. Not investment advice._")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Combined dossier: one report blending triangulation + multifactor + panel    #
+# --------------------------------------------------------------------------- #
+def _consensus_verdict(tri: TriangulationResult, mf: MultiFactorResult) -> str:
+    """One-line read combining the ensemble and the regression."""
+    vals = [v for v in (tri.ensemble_yoy, mf.predicted_yoy) if v is not None]
+    if not vals:
+        return "No forecast could be produced from the available signals."
+    direction = "growth" if sum(vals) / len(vals) >= 0 else "decline"
+    agree = "agree" if all((v >= 0) == (vals[0] >= 0) for v in vals) else "disagree on direction"
+    return (
+        f"Ensemble {pct(tri.ensemble_yoy)} and multifactor {pct(mf.predicted_yoy)} "
+        f"YoY — the two methods {agree} ({direction})."
+    )
+
+
+def build_dossier_markdown(
+    entity: Entity,
+    tri: TriangulationResult,
+    mf: MultiFactorResult,
+    panel_rows: list[dict],
+) -> str:
+    """Compose a single company dossier from the triangulation and multifactor
+    results plus the company's point-in-time panel coverage."""
+    lines: list[str] = []
+    A = lines.append
+    A(f"# Signal dossier — {entity.name or entity.query} ({entity.ticker or ''})\n")
+    A(f"- **CIK:** {entity.cik or 'n/a'} · **Sector:** {entity.sector or entity.sic_description or 'n/a'}"
+      f" (SIC {entity.sic or 'n/a'})")
+    A(f"- **Fiscal year end:** {entity.fiscal_year_end or 'n/a'} · **Seed terms:** "
+      f"{', '.join(entity.seed_terms) or 'n/a'}")
+    A(f"- **Target quarter:** {quarter_label(tri.target_period or mf.target_period)}\n")
+
+    A("## Bottom line\n")
+    A(f"> {_consensus_verdict(tri, mf)}\n")
+
+    # --- ensemble nowcast (triangulation) ---
+    A("## Triangulated nowcast\n")
+    A("Independent demand signals, each weighted by out-of-sample skill.\n")
+    A("| driver | n | lag | corr r | skill (oos) | pred YoY | weight |")
+    A("|:--|--:|--:|--:|--:|--:|--:|")
+    for d in tri.drivers:
+        A(f"| {d.label} | {d.n} | {d.lag} | {d.corr:+.3f} | {skill_cell(d.skill)} | "
+          f"{pct(d.predicted_yoy)} | {weight_cell(d.weight)} |")
+    A("")
+    A(f"- **Ensemble revenue YoY:** {pct(tri.ensemble_yoy)}")
+    if tri.ensemble_level is not None:
+        A(f"- **Ensemble revenue:** {money(tri.ensemble_level)} (year-ago base {money(tri.base_level)})")
+    if tri.agreement_stdev is not None:
+        A(f"- **Driver spread (sd):** {pct(tri.agreement_stdev, signed=False)}")
+    A("")
+
+    # --- combined regression (multifactor) ---
+    A("## Multifactor regression\n")
+    season = " + quarter seasonality" if mf.seasonal else ""
+    A(f"Single regression on {', '.join(mf.driver_labels) or 'n/a'}{season} "
+      f"(n={mf.n_obs}, R²={mf.r2:.3f}).\n")
+    if mf.features:
+        A("| factor | coef | t | p |")
+        A("|:--|--:|--:|--:|")
+        for f in mf.features:
+            A(f"| {f.name} | {f.coef:+.3f} | {f.t:+.2f} | {f.p:.3f} |")
+        A("")
+    A(f"- **Predicted revenue YoY:** {pct(mf.predicted_yoy)} — skill: {_skill_verdict(mf.skill)}")
+    if mf.predicted_level is not None:
+        A(f"- **Predicted revenue:** {money(mf.predicted_level)} "
+          f"({int((1 - mf.alpha) * 100)}% PI {money(mf.pi_low_level)} … {money(mf.pi_high_level)})")
+    A("")
+
+    # --- point-in-time panel coverage ---
+    A("## Point-in-time panel coverage\n")
+    if panel_rows:
+        A("Vintages captured by scheduled `altsignal refresh` runs (more vintages = "
+          "more honest backtests).\n")
+        A("| source | metric | geo | periods | vintages | capture window |")
+        A("|:--|:--|:--|--:|--:|:--|")
+        for r in panel_rows:
+            window = (
+                f"{r['first_capture']} → {r['last_capture']}"
+                if r["first_capture"] != r["last_capture"]
+                else r["first_capture"]
+            )
+            A(f"| {r['source']} | {r['metric']} | {r['geo'] or '—'} | {r['n_obs']} | "
+              f"{r['n_vintages']} | {window} |")
+        A("")
+    else:
+        A("_No panel history yet for this company. Run `altsignal refresh "
+          f"{entity.ticker or entity.query}` (ideally on a schedule) to start building one._\n")
+
+    # --- caveats (deduped across both analyses) ---
+    seen: set[str] = set()
+    caveats = [w for w in (*tri.warnings, *mf.warnings) if not (w in seen or seen.add(w))]
+    if caveats:
+        A("## Caveats\n")
+        for w in caveats:
+            A(f"- ⚠ {w}")
+        A("")
+
+    A("---")
+    A("_Dossier built from public-data signals (triangulation + multifactor regression). "
+      "Correlation is not causation; small samples are noisy. Not investment advice._")
     return "\n".join(lines)

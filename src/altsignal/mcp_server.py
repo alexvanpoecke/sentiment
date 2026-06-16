@@ -39,8 +39,10 @@ mcp = FastMCP(
         "Build non-proprietary alternative-data signals for any US public company and "
         "forecast its next-quarter revenue from lagged demand drivers (Google Trends, "
         "Wikipedia pageviews, GDELT news volume, FRED macro series). Typical flow: "
-        "resolve_company -> (forecast | triangulate | multifactor); use screen to rank a "
-        "universe of tickers, and list_sources to see which connectors are usable right now. "
+        "resolve_company -> (forecast | triangulate | multifactor); build_report assembles a "
+        "full dossier for one company; use screen to rank a universe of tickers, and "
+        "list_sources to see which connectors are usable right now. refresh_panel captures "
+        "dated signal vintages for backtesting and panel_status shows that coverage. "
         "All forecasts are estimates for research, not investment advice."
     ),
 )
@@ -318,6 +320,82 @@ def multifactor(
         quarters=quarters, alpha=alpha, min_n=min_n, lag_by=lag_by, sign=sign,
     )
     return {"entity": _entity_dict(ent), "result": _jsonable(res)}
+
+
+@mcp.tool()
+def refresh_panel(
+    tickers: list[str] | None = None,
+    drivers: list[str] | None = None,
+    geo: str = "US",
+    quarters: int = 16,
+) -> dict[str, Any]:
+    """Capture revenue + demand drivers for a watchlist into the point-in-time panel.
+
+    Appends a dated vintage of every series so later backtests can use only what
+    was knowable at each past date (no look-ahead from revisions). `tickers` and
+    `drivers` fall back to configs/watchlist.toml, then to wikipedia,gdelt (Google
+    Trends rate-limits in bulk). One bad ticker/driver is recorded as a failed
+    capture and never sinks the rest. Run this on a schedule to build real history.
+    """
+    from .workflows.refresh import refresh as _refresh
+
+    res = _refresh(tickers, drivers=drivers, geo=geo, quarters=quarters)
+    return {
+        "captured_at": res.captured_at.isoformat(),
+        "tickers": res.tickers,
+        "n_ok": res.n_ok,
+        "n_failed": res.n_failed,
+        "n_obs": res.n_obs,
+        "captures": _jsonable(res.captures),
+        "notes": res.notes,
+        "warnings": res.warnings,
+    }
+
+
+@mcp.tool()
+def panel_status(entity: str | None = None) -> dict[str, Any]:
+    """Show point-in-time panel coverage: periods and vintages captured per series.
+
+    Pass an entity key (ticker) to filter to one company, or omit for everything
+    tracked. Reflects how much as-of history has accumulated from refresh_panel runs.
+    """
+    from .store import get_store
+
+    rows = get_store().panel_summary(entity.strip().upper() if entity else None)
+    return {"series": _jsonable(rows)}
+
+
+@mcp.tool()
+def build_report(
+    query: str,
+    drivers: list[str] | None = None,
+    seasonal: bool = False,
+    geo: str = "US",
+    max_lag: int = 4,
+    quarters: int = 16,
+    alpha: float = 0.20,
+    min_n: int = 6,
+    lag_by: str = "skill",
+    sign: str = "any",
+) -> dict[str, Any]:
+    """Build one company dossier: triangulation + multifactor regression + panel coverage.
+
+    Runs both forecasting methods for the company and returns the entity, the
+    triangulated ensemble nowcast, the multifactor regression result, and the
+    point-in-time panel coverage — everything needed for a consolidated research memo.
+    """
+    from .workflows.report import build_report as _build_report
+
+    ent, tri, mf, panel_rows = _build_report(
+        query, drivers=drivers, seasonal=seasonal, geo=geo, max_lag=max_lag,
+        quarters=quarters, alpha=alpha, min_n=min_n, lag_by=lag_by, sign=sign,
+    )
+    return {
+        "entity": _entity_dict(ent),
+        "triangulation": _jsonable(tri),
+        "multifactor": _jsonable(mf),
+        "panel_coverage": _jsonable(panel_rows),
+    }
 
 
 def main() -> None:

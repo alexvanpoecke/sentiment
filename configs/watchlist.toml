@@ -1,0 +1,15 @@
+# Companies to capture on a schedule with `altsignal refresh` (no ticker args).
+#
+# Each scheduled run appends a point-in-time vintage of every series to the panel,
+# so over time you accumulate a real as-of history for honest backtests.
+# Schedule it however you like, e.g. a daily cron / Task Scheduler job running:
+#     altsignal refresh
+
+tickers = ["WGO", "THO", "LCII", "PATK"]
+
+# Drivers to capture. Default is the scalable free set (Wikipedia + GDELT);
+# Google Trends rate-limits hard in bulk, so add it only for short watchlists.
+drivers = ["wikipedia", "gdelt"]
+
+# History window (quarters) to pull per series on each refresh.
+quarters = 16
