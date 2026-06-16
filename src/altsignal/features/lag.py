@@ -40,10 +40,10 @@ def walk_forward(
 ) -> tuple[int, float | None, float | None]:
     """One-step expanding-window backtest vs naive persistence.
 
-    Naive = last year's YoY actual carried forward, looked up by DATE (the true
-    prior calendar quarter), since ``qs`` can skip quarters lacking a driver
-    reading. Returns (n_folds, model_mae, naive_mae); MAEs are None if no fold
-    could be scored.
+    Naive = the prior quarter's YoY carried forward (persistence), looked up by
+    DATE (the true prior calendar quarter), since ``qs`` can skip quarters lacking
+    a driver reading. Returns (n_folds, model_mae, naive_mae); MAEs are None if no
+    fold could be scored.
     """
     errs: list[float] = []
     naive: list[float] = []

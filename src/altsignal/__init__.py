@@ -7,9 +7,12 @@ __version__ = "0.1.0"
 from .models import (
     DriverContribution,
     Entity,
+    FactorCoef,
     ForecastResult,
     LagStat,
+    MultiFactorResult,
     Observation,
+    ScreenRow,
     Signal,
     TriangulationResult,
 )
@@ -22,5 +25,8 @@ __all__ = [
     "LagStat",
     "DriverContribution",
     "TriangulationResult",
+    "ScreenRow",
+    "FactorCoef",
+    "MultiFactorResult",
     "__version__",
 ]

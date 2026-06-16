@@ -208,5 +208,79 @@ def triangulate(
     console.print(f"\n[dim]Memo written to {md_file}[/]")
 
 
+@app.command()
+def screen(
+    tickers: str = typer.Argument(..., help="Comma-separated tickers, e.g. WGO,THO,LCII,PATK"),
+    drivers: Optional[str] = typer.Option(
+        None, help="Comma-separated drivers (default: wikipedia,gdelt; trends rate-limits in bulk)"
+    ),
+    max_lag: int = typer.Option(4),
+    quarters: int = typer.Option(16),
+    min_n: int = typer.Option(6),
+    lag_by: str = typer.Option("skill"),
+    sign: str = typer.Option("any"),
+    out_dir: Optional[str] = typer.Option(None, help="Where to write the Markdown memo"),
+) -> None:
+    """Backtest a universe of tickers x drivers and rank by out-of-sample skill."""
+    from .reports.render import build_screen_markdown, render_screen
+    from .workflows.screen import screen as _screen
+
+    tk = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    if not tk:
+        raise _fail("no tickers given")
+    drv = [d.strip() for d in drivers.split(",") if d.strip()] if drivers else None
+    try:
+        rows = _screen(
+            tk, drivers=drv, max_lag=max_lag, quarters=quarters, min_n=min_n,
+            lag_by=lag_by, sign=sign,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise _fail(str(e))
+
+    render_screen(rows, console)
+    out_path = Path(out_dir) if out_dir else REPORTS_DIR
+    out_path.mkdir(parents=True, exist_ok=True)
+    md_file = out_path / "screen.md"
+    md_file.write_text(build_screen_markdown(rows), encoding="utf-8")
+    console.print(f"\n[dim]Memo written to {md_file}[/]")
+
+
+@app.command()
+def multifactor(
+    query: str = typer.Argument(..., help="Ticker or company name"),
+    drivers: Optional[str] = typer.Option(
+        None, help="Comma-separated drivers (default: google_trends,wikipedia,gdelt)"
+    ),
+    seasonal: bool = typer.Option(False, help="Add quarter-of-year dummies (seasonality)"),
+    geo: str = typer.Option("US"),
+    max_lag: int = typer.Option(4),
+    quarters: int = typer.Option(16),
+    alpha: float = typer.Option(0.20),
+    min_n: int = typer.Option(6),
+    lag_by: str = typer.Option("skill"),
+    sign: str = typer.Option("any"),
+    out_dir: Optional[str] = typer.Option(None, help="Where to write the Markdown memo"),
+) -> None:
+    """Combine several signals in one regression (multi-driver, optional seasonality)."""
+    from .reports.render import build_multifactor_markdown, render_multifactor
+    from .workflows.multifactor import run_multifactor
+
+    drv = [d.strip() for d in drivers.split(",") if d.strip()] if drivers else None
+    try:
+        ent, res = run_multifactor(
+            query, drivers=drv, seasonal=seasonal, geo=geo, max_lag=max_lag,
+            quarters=quarters, alpha=alpha, min_n=min_n, lag_by=lag_by, sign=sign,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise _fail(str(e))
+
+    render_multifactor(ent, res, console)
+    out_path = Path(out_dir) if out_dir else REPORTS_DIR
+    out_path.mkdir(parents=True, exist_ok=True)
+    md_file = out_path / f"{(ent.ticker or ent.query).upper()}_multifactor.md"
+    md_file.write_text(build_multifactor_markdown(ent, res), encoding="utf-8")
+    console.print(f"\n[dim]Memo written to {md_file}[/]")
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()

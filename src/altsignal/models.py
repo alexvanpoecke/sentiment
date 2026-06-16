@@ -184,3 +184,61 @@ class TriangulationResult:
     agreement_stdev: float | None = None  # dispersion of driver predictions
     notes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ScreenRow:
+    """One (company, driver) result in a cross-sectional skill screen."""
+
+    ticker: str
+    name: str | None = None
+    driver: str | None = None
+    n: int = 0
+    lag: int = 0
+    corr: float = 0.0
+    skill: float | None = None  # out-of-sample skill vs naive persistence
+    predicted_yoy: float | None = None
+    target_period: date | None = None
+    error: str | None = None
+
+
+@dataclass
+class FactorCoef:
+    """One coefficient in a multifactor regression."""
+
+    name: str
+    coef: float
+    t: float
+    p: float
+
+
+@dataclass
+class MultiFactorResult:
+    """Forecast from a single regression on several signals (+ optional seasonality)."""
+
+    entity_key: str
+    kpi_metric: str = "revenue"
+    kpi_source: str = "edgar"
+    seasonal: bool = False
+    driver_labels: list[str] = field(default_factory=list)
+    n_obs: int = 0
+    r2: float = 0.0
+    features: list[FactorCoef] = field(default_factory=list)
+
+    target_period: date | None = None
+    predicted_yoy: float | None = None
+    pi_low_yoy: float | None = None
+    pi_high_yoy: float | None = None
+    base_level: float | None = None
+    predicted_level: float | None = None
+    pi_low_level: float | None = None
+    pi_high_level: float | None = None
+    alpha: float = 0.20
+
+    backtest_n: int = 0
+    backtest_mae: float | None = None
+    backtest_naive_mae: float | None = None
+    skill: float | None = None
+
+    notes: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)

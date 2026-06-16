@@ -38,6 +38,24 @@ def _trim_signal(sig: Signal, keep: int) -> Signal:
     )
 
 
+# Shared default driver set (triangulate/multifactor); screen overrides it.
+DEFAULT_DRIVERS = ["google_trends", "wikipedia", "gdelt"]
+
+
+def resolve_and_revenue(
+    query: str, *, quarters: int = 16, store=None, settings: Settings | None = None, edgar=None
+) -> tuple[Entity, Signal]:
+    """Shared workflow prologue: resolve a query to an Entity and fetch its trimmed
+    quarterly revenue. Raises RuntimeError if the query isn't a SEC filer."""
+    settings = settings or get_settings()
+    edgar = edgar or get_connector("edgar", store, settings)
+    entity = resolve_entity(query, settings=settings, store=store, edgar=edgar)
+    if not entity.cik:
+        raise RuntimeError(f"Could not resolve {query!r} to a SEC filer.")
+    revenue = _trim_signal(edgar.quarterly_revenue(entity.cik), keep=quarters + 5)
+    return entity, revenue
+
+
 def _revenue_levels_and_yoy(sig: Signal) -> tuple[dict[date, float], dict[date, float], int]:
     """Calendar-quarter-keyed revenue levels and (gap-safe, date-based) YoY growth.
 
@@ -259,14 +277,7 @@ def run_forecast(
     settings: Settings | None = None,
 ) -> tuple[Entity, ForecastResult]:
     settings = settings or get_settings()
-    edgar = get_connector("edgar", store, settings)
-    entity = resolve_entity(query, settings=settings, store=store, edgar=edgar)
-    if not entity.cik:
-        raise RuntimeError(
-            f"Could not resolve {query!r} to a SEC filer, so there's no KPI (revenue) to forecast."
-        )
-
-    revenue = _trim_signal(edgar.quarterly_revenue(entity.cik), keep=quarters + 5)
+    entity, revenue = resolve_and_revenue(query, quarters=quarters, store=store, settings=settings)
 
     if driver_csv:
         driver_signal, driver_label = _load_csv_driver(driver_csv)

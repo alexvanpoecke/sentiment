@@ -1,6 +1,15 @@
 import math
 
-from altsignal.features.stats import betainc, fit_ols, pearson, student_t_cdf, student_t_ppf
+import pytest
+
+from altsignal.features.stats import (
+    betainc,
+    fit_ols,
+    fit_ols_multi,
+    pearson,
+    student_t_cdf,
+    student_t_ppf,
+)
 
 
 def test_pearson_perfect_positive():
@@ -52,3 +61,31 @@ def test_ols_interval_widens_with_noise():
     yhat, lo, hi = reg.predict(2.5, alpha=0.2)
     assert lo < yhat < hi
     assert not math.isnan(reg.p_slope)
+
+
+def test_fit_ols_multi_exact_plane():
+    feats = [[0, 0], [1, 0], [0, 1], [1, 1], [2, 1], [1, 2]]
+    y = [1 + 2 * a + 3 * b for a, b in feats]  # y = 1 + 2*x1 + 3*x2
+    reg = fit_ols_multi(feats, y)
+    assert abs(reg.coef[0] - 1.0) < 1e-6
+    assert abs(reg.coef[1] - 2.0) < 1e-6
+    assert abs(reg.coef[2] - 3.0) < 1e-6
+    assert abs(reg.r2 - 1.0) < 1e-9
+    yhat, lo, hi = reg.predict([3, 3])
+    assert abs(yhat - 16.0) < 1e-6
+    assert abs(hi - lo) < 1e-6  # exact fit -> degenerate (tight) interval
+
+
+def test_fit_ols_multi_matches_simple_ols_on_one_feature():
+    xs = [0, 1, 2, 3, 4]
+    ys = [1.0, 3.1, 4.9, 7.2, 8.8]
+    simple = fit_ols(xs, ys)
+    multi = fit_ols_multi([[x] for x in xs], ys)
+    assert abs(multi.coef[0] - simple.intercept) < 1e-9
+    assert abs(multi.coef[1] - simple.slope) < 1e-9
+
+
+def test_fit_ols_multi_rejects_collinear_features():
+    feats = [[1, 2], [2, 4], [3, 6], [4, 8], [5, 10]]  # x2 = 2*x1
+    with pytest.raises(ValueError):
+        fit_ols_multi(feats, [1, 2, 3, 4, 5])

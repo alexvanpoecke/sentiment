@@ -181,3 +181,88 @@ def fit_ols(xs: list[float], ys: list[float]) -> Regression:
         xbar=mx,
         sxx=sxx,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Multiple linear regression (pure Python, normal equations)                  #
+# --------------------------------------------------------------------------- #
+def _mat_inv(m: list[list[float]]) -> list[list[float]]:
+    """Invert a square matrix via Gauss-Jordan with partial pivoting."""
+    n = len(m)
+    a = [list(m[i]) + [1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
+    for col in range(n):
+        piv = max(range(col, n), key=lambda r: abs(a[r][col]))
+        if abs(a[piv][col]) < 1e-12:
+            raise ValueError("singular matrix (collinear features?)")
+        a[col], a[piv] = a[piv], a[col]
+        pivot = a[col][col]
+        a[col] = [x / pivot for x in a[col]]
+        for r in range(n):
+            if r != col and a[r][col] != 0.0:
+                factor = a[r][col]
+                a[r] = [x - factor * y for x, y in zip(a[r], a[col])]
+    return [row[n:] for row in a]
+
+
+@dataclass
+class MultiRegression:
+    coef: list[float]  # [intercept, b1, b2, ...]
+    n: int
+    df: int
+    r2: float
+    resid_std: float
+    se: list[float]  # std error per coefficient
+    t: list[float]
+    p: list[float]
+    _xtx_inv: list[list[float]]
+
+    def predict(self, x0: list[float], alpha: float = 0.20) -> tuple[float, float, float]:
+        """Point forecast + (1-alpha) prediction interval for a NEW observation."""
+        a0 = [1.0, *x0]
+        if len(a0) != len(self.coef):
+            raise ValueError(f"predict expected {len(self.coef) - 1} features, got {len(x0)}")
+        yhat = sum(c * a for c, a in zip(self.coef, a0))
+        if self.df <= 0:
+            return (yhat, yhat, yhat)
+        quad = sum(
+            a0[i] * self._xtx_inv[i][j] * a0[j]
+            for i in range(len(a0))
+            for j in range(len(a0))
+        )
+        se_pred = self.resid_std * math.sqrt(max(0.0, 1.0 + quad))
+        half = student_t_ppf(1.0 - alpha / 2.0, self.df) * se_pred
+        return (yhat, yhat - half, yhat + half)
+
+
+def fit_ols_multi(features: list[list[float]], y: list[float]) -> MultiRegression:
+    """OLS of y on multiple features (intercept added automatically)."""
+    n = len(y)
+    if n != len(features):
+        raise ValueError("features and y length mismatch")
+    k = len(features[0]) if features else 0
+    if any(len(row) != k for row in features):
+        raise ValueError("ragged feature matrix")
+    if n < k + 2:
+        raise ValueError(f"need at least {k + 2} rows to fit {k} features (+intercept)")
+
+    x = [[1.0, *row] for row in features]
+    p = k + 1
+    xtx = [[sum(x[r][i] * x[r][j] for r in range(n)) for j in range(p)] for i in range(p)]
+    xty = [sum(x[r][i] * y[r] for r in range(n)) for i in range(p)]
+    xtx_inv = _mat_inv(xtx)
+    coef = [sum(xtx_inv[i][j] * xty[j] for j in range(p)) for i in range(p)]
+
+    sse = sum((y[r] - sum(coef[j] * x[r][j] for j in range(p))) ** 2 for r in range(n))
+    ybar = sum(y) / n
+    sst = sum((v - ybar) ** 2 for v in y)
+    df = n - p
+    r2 = 1.0 - sse / sst if sst > 0 else 0.0
+    resid_std = math.sqrt(sse / df) if df > 0 else 0.0
+    se = [resid_std * math.sqrt(max(0.0, xtx_inv[i][i])) for i in range(p)]
+    t = [coef[i] / se[i] if se[i] > 0 else math.inf for i in range(p)]
+    pvals = [
+        _two_sided_t_p(t[i], df) if df > 0 and math.isfinite(t[i]) else 0.0 for i in range(p)
+    ]
+    return MultiRegression(
+        coef=coef, n=n, df=df, r2=r2, resid_std=resid_std, se=se, t=t, p=pvals, _xtx_inv=xtx_inv
+    )

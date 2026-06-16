@@ -10,7 +10,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ..features.align import quarter_of
-from ..models import Entity, ForecastResult, TriangulationResult
+from ..models import Entity, ForecastResult, MultiFactorResult, ScreenRow, TriangulationResult
 
 
 def quarter_label(d: date | None) -> str:
@@ -48,14 +48,22 @@ def _model_str(res: ForecastResult) -> str:
 
 
 def _skill(res: ForecastResult) -> str:
-    if res.backtest_mae_yoy is None or res.backtest_naive_mae_yoy is None:
+    if (
+        res.backtest_mae_yoy is None
+        or res.backtest_naive_mae_yoy is None
+        or res.backtest_naive_mae_yoy <= 0
+    ):
         return "n/a"
-    naive = res.backtest_naive_mae_yoy
-    if naive <= 0:
-        return "n/a"
-    impr = (naive - res.backtest_mae_yoy) / naive
-    verdict = "beats" if impr > 0 else "worse than"
-    return f"{pct(impr)} ({verdict} naive)"
+    skill = (res.backtest_naive_mae_yoy - res.backtest_mae_yoy) / res.backtest_naive_mae_yoy
+    return _skill_verdict(skill)
+
+
+def _print_footnotes(console: Console, res) -> None:
+    """Print a result's dim notes then yellow warnings (shared by the renderers)."""
+    for n in res.notes:
+        console.print(f"[dim]- {n}[/]")
+    for w in res.warnings:
+        console.print(f"[yellow]! {w}[/]")
 
 
 def _entity_head(entity: Entity) -> str:
@@ -115,10 +123,7 @@ def render_console(entity: Entity, res: ForecastResult, console: Console | None 
     border = "green" if res.predicted_yoy is not None else "yellow"
     console.print(Panel(fc, title="Forecast", border_style=border, expand=False))
 
-    for n in res.notes:
-        console.print(f"[dim]- {n}[/]")
-    for w in res.warnings:
-        console.print(f"[yellow]! {w}[/]")
+    _print_footnotes(console, res)
 
 
 def build_markdown(entity: Entity, res: ForecastResult) -> str:
@@ -211,10 +216,7 @@ def render_triangulation(
         e.add_row("Driver spread (sd)", pct(res.agreement_stdev, signed=False))
     console.print(Panel(e, title="Ensemble nowcast", border_style="green", expand=False))
 
-    for n in res.notes:
-        console.print(f"[dim]- {n}[/]")
-    for w in res.warnings:
-        console.print(f"[yellow]! {w}[/]")
+    _print_footnotes(console, res)
 
 
 def build_triangulation_markdown(entity: Entity, res: TriangulationResult) -> str:
@@ -246,4 +248,140 @@ def build_triangulation_markdown(entity: Entity, res: TriangulationResult) -> st
             A("")
     A("---")
     A("_Ensemble of independent public-data signals, weighted by out-of-sample skill. Not investment advice._")
+    return "\n".join(lines)
+
+
+def render_screen(rows: list[ScreenRow], console: Console | None = None) -> None:
+    console = console or Console()
+    scored = [r for r in rows if not r.error]
+    errors = [r for r in rows if r.error]
+    # Slim console table (names/notes live in the Markdown memo) so it fits a terminal.
+    t = Table(
+        title="Cross-sectional skill screen (ranked by out-of-sample skill)", title_justify="left"
+    )
+    for col, justify in (
+        ("ticker", "left"), ("driver", "left"), ("n", "right"), ("lag", "right"),
+        ("corr r", "right"), ("skill (oos)", "right"), ("pred YoY", "right"), ("target", "right"),
+    ):
+        t.add_column(col, justify=justify)
+    for r in scored:
+        style = "bold green" if (r.skill or 0) > 0 else ""
+        corr = "n/a" if r.corr != r.corr else f"{r.corr:+.3f}"
+        t.add_row(
+            r.ticker, r.driver or "", str(r.n), str(r.lag), corr,
+            skill_cell(r.skill), pct(r.predicted_yoy), quarter_label(r.target_period), style=style,
+        )
+    console.print(t)
+    n_pos = sum(1 for r in scored if (r.skill or 0) > 0)
+    console.print(
+        f"[dim]{n_pos}/{len(scored)} (company, driver) pairs beat naive persistence out-of-sample.[/]"
+    )
+    for r in errors:
+        console.print(f"[dim]skipped {r.ticker}/{r.driver or '?'}: {r.error}[/]")
+
+
+def build_screen_markdown(rows: list[ScreenRow]) -> str:
+    lines: list[str] = []
+    A = lines.append
+    A("# Cross-sectional skill screen\n")
+    A("Ranked by out-of-sample skill vs naive persistence (positive = beats naive).\n")
+    A("| ticker | name | driver | n | lag | corr r | skill (oos) | pred YoY | target | note |")
+    A("|:--|:--|:--|--:|--:|--:|--:|--:|--:|:--|")
+    for r in rows:
+        if r.error:
+            A(f"| {r.ticker} | {r.name or ''} | {r.driver or ''} | | | | | | | {r.error} |")
+            continue
+        corr = "n/a" if r.corr != r.corr else f"{r.corr:+.3f}"
+        A(
+            f"| {r.ticker} | {r.name or ''} | {r.driver} | {r.n} | {r.lag} | {corr} | "
+            f"{skill_cell(r.skill)} | {pct(r.predicted_yoy)} | {quarter_label(r.target_period)} | |"
+        )
+    A("")
+    scored = [r for r in rows if not r.error]
+    n_pos = sum(1 for r in scored if (r.skill or 0) > 0)
+    A(f"_{n_pos}/{len(scored)} (company, driver) pairs beat naive persistence out-of-sample._")
+    return "\n".join(lines)
+
+
+def _skill_verdict(skill: float | None) -> str:
+    if skill is None:
+        return "n/a"
+    return f"{skill * 100:+.0f}% ({'beats' if skill > 0 else 'worse than'} naive)"
+
+
+def render_multifactor(
+    entity: Entity, res: MultiFactorResult, console: Console | None = None
+) -> None:
+    console = console or Console()
+    console.print(Panel(_entity_head(entity), title="Entity", border_style="cyan", expand=False))
+    console.print(
+        f"[bold]KPI:[/] {res.kpi_source}:{res.kpi_metric}    "
+        f"[bold]drivers:[/] {', '.join(res.driver_labels) or 'n/a'}    "
+        f"[bold]seasonal:[/] {res.seasonal}    [bold]n:[/] {res.n_obs}"
+    )
+    if res.features:
+        t = Table(title="Coefficients", title_justify="left")
+        t.add_column("factor")
+        t.add_column("coef", justify="right")
+        t.add_column("t", justify="right")
+        t.add_column("p", justify="right")
+        for f in res.features:
+            t.add_row(f.name, f"{f.coef:+.3f}", f"{f.t:+.2f}", f"{f.p:.3f}")
+        console.print(t)
+
+    fit = Table(show_header=False, box=None)
+    fit.add_row("R^2", f"{res.r2:.3f}")
+    fit.add_row("Backtest MAE", f"{pct(res.backtest_mae, signed=False)} over {res.backtest_n} folds")
+    fit.add_row("  vs naive MAE", f"{pct(res.backtest_naive_mae, signed=False)}  |  skill: {_skill_verdict(res.skill)}")
+    console.print(Panel(fit, title="Fit & backtest", border_style="blue", expand=False))
+
+    fc = Table(show_header=False, box=None)
+    fc.add_row("Target quarter", quarter_label(res.target_period))
+    fc.add_row("Predicted revenue YoY", f"[bold]{pct(res.predicted_yoy)}[/]")
+    if res.predicted_level is not None:
+        ci = f"  [{money(res.pi_low_level)} ... {money(res.pi_high_level)}]"
+        fc.add_row(
+            "Predicted revenue",
+            f"[bold]{money(res.predicted_level)}[/]{ci}  ({int((1 - res.alpha) * 100)}% PI)",
+        )
+        fc.add_row("(year-ago base)", money(res.base_level))
+    border = "green" if res.predicted_yoy is not None else "yellow"
+    console.print(Panel(fc, title="Forecast", border_style=border, expand=False))
+
+    _print_footnotes(console, res)
+
+
+def build_multifactor_markdown(entity: Entity, res: MultiFactorResult) -> str:
+    lines: list[str] = []
+    A = lines.append
+    A(f"# Multifactor forecast — {entity.name or entity.query} ({entity.ticker or ''})\n")
+    season = " + quarter seasonality" if res.seasonal else ""
+    A(f"- **CIK:** {entity.cik or 'n/a'} · **Drivers:** {', '.join(res.driver_labels) or 'n/a'}{season}")
+    A(f"- **Aligned quarters:** {res.n_obs} · **R²:** {res.r2:.3f}\n")
+    A("## Coefficients\n")
+    A("| factor | coef | t | p |")
+    A("|:--|--:|--:|--:|")
+    for f in res.features:
+        A(f"| {f.name} | {f.coef:+.3f} | {f.t:+.2f} | {f.p:.3f} |")
+    A("")
+    A("## Backtest\n")
+    A(f"- **Backtest MAE (YoY):** {pct(res.backtest_mae, signed=False)} over {res.backtest_n} folds")
+    A(f"- **Naive MAE (YoY):** {pct(res.backtest_naive_mae, signed=False)} — skill: {_skill_verdict(res.skill)}\n")
+    A("## Forecast\n")
+    A(f"- **Target quarter:** {quarter_label(res.target_period)}")
+    A(f"- **Predicted revenue YoY:** {pct(res.predicted_yoy)}")
+    if res.predicted_level is not None:
+        A(
+            f"- **Predicted revenue:** {money(res.predicted_level)} "
+            f"({int((1 - res.alpha) * 100)}% PI {money(res.pi_low_level)} … {money(res.pi_high_level)})"
+        )
+        A(f"- **Year-ago base:** {money(res.base_level)}")
+    A("")
+    if res.warnings:
+        A("## Caveats\n")
+        for w in res.warnings:
+            A(f"- ! {w}")
+        A("")
+    A("---")
+    A("_Multiple regression on public-data signals; small samples overfit. Not investment advice._")
     return "\n".join(lines)

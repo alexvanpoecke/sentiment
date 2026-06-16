@@ -13,13 +13,16 @@ from collections import Counter
 from statistics import pstdev
 
 from ..config import Settings, get_settings
-from ..entities.resolver import resolve as resolve_entity
 from ..features.align import add_quarters, quarter_of
 from ..models import DriverContribution, Entity, TriangulationResult
 from ..registry import get_connector
-from .forecast import _load_driver, _revenue_levels_and_yoy, _trim_signal, forecast_kpi
-
-DEFAULT_DRIVERS = ["google_trends", "wikipedia", "gdelt"]
+from .forecast import (
+    DEFAULT_DRIVERS,
+    _load_driver,
+    _revenue_levels_and_yoy,
+    forecast_kpi,
+    resolve_and_revenue,
+)
 
 
 def skill_weights(skills: list[float | None]) -> list[float]:
@@ -47,11 +50,7 @@ def triangulate(
     settings: Settings | None = None,
 ) -> tuple[Entity, TriangulationResult]:
     settings = settings or get_settings()
-    edgar = get_connector("edgar", store, settings)
-    entity = resolve_entity(query, settings=settings, store=store, edgar=edgar)
-    if not entity.cik:
-        raise RuntimeError(f"Could not resolve {query!r} to a SEC filer.")
-    revenue = _trim_signal(edgar.quarterly_revenue(entity.cik), keep=quarters + 5)
+    entity, revenue = resolve_and_revenue(query, quarters=quarters, store=store, settings=settings)
     levels = _revenue_levels_and_yoy(revenue)[0]
 
     if drivers is None:
