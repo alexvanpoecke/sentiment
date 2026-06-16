@@ -62,6 +62,16 @@ def lookback_start(end: date, quarters: int) -> date:
     return add_quarters(calendar_quarter_end(end), -quarters)
 
 
+# Extra quarters fetched beyond the requested window so YoY (back 4q) and the
+# lag search both have a year-ago base.
+FETCH_PAD_QUARTERS = 8
+
+
+def fetch_window_start(end: date, quarters: int) -> date:
+    """Start date to fetch ``quarters`` of *usable* driver history (padded)."""
+    return lookback_start(end, quarters + FETCH_PAD_QUARTERS)
+
+
 def yoy_quarterly(qmap: dict[date, float]) -> dict[date, float]:
     """Gap-safe YoY for a calendar-quarter-keyed map: value[q] / value[q - 4 quarters] - 1,
     looked up by *date* (4 calendar quarters back), not by list position, so a missing

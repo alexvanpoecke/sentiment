@@ -14,7 +14,7 @@ import json
 from contextlib import nullcontext
 from datetime import date, datetime, timezone
 
-from ..features.align import lookback_start
+from ..features.align import fetch_window_start, lookback_start
 from ..models import Observation, Signal
 from ..registry import register
 from .base import Connector, ConnectorError
@@ -129,5 +129,5 @@ class GoogleTrendsConnector(Connector):
         if not term:
             raise ValueError("google_trends.fetch needs `term`")
         end = datetime.now(timezone.utc).date()
-        start = lookback_start(end, quarters + 8)
+        start = fetch_window_start(end, quarters)
         return [self.interest_over_time(term, geo=geo, start=start, end=end)]

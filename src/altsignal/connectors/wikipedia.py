@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from urllib.parse import quote
 
-from ..features.align import lookback_start
+from ..features.align import fetch_window_start, lookback_start
 from ..models import Observation, Signal
 from ..registry import register
 from .base import Connector
@@ -74,5 +74,5 @@ class WikipediaConnector(Connector):
         if not page:
             raise ValueError("wikipedia.fetch needs `page` (article title)")
         end = datetime.now(timezone.utc).date()
-        start = lookback_start(end, quarters + 8)
+        start = fetch_window_start(end, quarters)
         return [self.pageviews(page, project=project, start=start, end=end)]

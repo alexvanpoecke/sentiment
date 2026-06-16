@@ -103,8 +103,9 @@ def forecast_kpi(
             f"{collisions} fiscal quarter(s) collided onto the same calendar quarter "
             f"(off-calendar fiscal year); kept the later one."
         )
-    if driver_signal.unit and "index" in (driver_signal.unit or ""):
-        res.notes.append("Driver is a relative 0-100 index; analysis uses YoY of the index.")
+    unit = driver_signal.unit or ""
+    if "index" in unit or "intensity" in unit:
+        res.notes.append("Driver is a relative measure (not absolute counts); analysis uses YoY.")
 
     if len(target_yoy) < 3 or len(driver_yoy) < 3:
         res.warnings.append("Not enough overlapping history to estimate a relationship.")
@@ -232,7 +233,12 @@ def _load_driver(
         conn = get_connector("fred", store, settings)
         sig = conn.fetch(series_id=term, quarters=quarters)[0]
         return sig, f"FRED: {term}"
-    raise ValueError(f"unknown driver {driver!r} (use google_trends|wikipedia|fred|csv)")
+    if driver == "gdelt":
+        q = term or entity.short_name or entity.name
+        conn = get_connector("gdelt", store, settings)
+        sig = conn.fetch(query=q, quarters=quarters)[0]
+        return sig, f"GDELT news volume: {q}"
+    raise ValueError(f"unknown driver {driver!r} (use google_trends|wikipedia|fred|gdelt|csv)")
 
 
 def run_forecast(

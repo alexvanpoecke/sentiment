@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from ..features.align import lookback_start
+from ..features.align import fetch_window_start
 from ..models import Observation, Signal
 from ..registry import register
 from .base import Connector
@@ -77,5 +77,5 @@ class FredConnector(Connector):
         if not self.available():
             raise RuntimeError("FRED connector unavailable: set FRED_API_KEY")
         if observation_start is None:
-            observation_start = lookback_start(date.today(), quarters + 8).isoformat()
+            observation_start = fetch_window_start(date.today(), quarters).isoformat()
         return [self.series(series_id, observation_start=observation_start)]

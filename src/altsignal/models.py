@@ -154,3 +154,33 @@ class ForecastResult:
     lag_table: list[LagStat] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DriverContribution:
+    """One driver's forecast within a triangulation ensemble."""
+
+    label: str
+    source: str
+    n: int = 0
+    lag: int = 0
+    corr: float = 0.0
+    skill: float | None = None
+    predicted_yoy: float | None = None
+    target_period: date | None = None
+    weight: float = 0.0  # normalized ensemble weight
+
+
+@dataclass
+class TriangulationResult:
+    """Ensemble nowcast blending several independent driver forecasts."""
+
+    entity_key: str
+    target_period: date | None = None
+    drivers: list[DriverContribution] = field(default_factory=list)
+    ensemble_yoy: float | None = None
+    base_level: float | None = None
+    ensemble_level: float | None = None
+    agreement_stdev: float | None = None  # dispersion of driver predictions
+    notes: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)

@@ -76,6 +76,7 @@ def signal(
     source: str = typer.Option("edgar", help="Connector source id (see `sources`)"),
     term: Optional[str] = typer.Option(None, help="Search term (google_trends) or FRED series id"),
     page: Optional[str] = typer.Option(None, help="Wikipedia article title"),
+    board: Optional[str] = typer.Option(None, help="Greenhouse board token (source=greenhouse)"),
     geo: str = typer.Option("US"),
     quarters: int = typer.Option(16),
     limit: int = typer.Option(12, help="How many recent observations to print"),
@@ -95,6 +96,12 @@ def signal(
             sigs = conn.fetch(page=page or ent.name or ent.short_name)
         elif source == "fred":
             sigs = conn.fetch(series_id=term)
+        elif source == "gdelt":
+            sigs = conn.fetch(query=term or ent.short_name, quarters=quarters)
+        elif source == "reddit":
+            sigs = conn.fetch(query=term or ent.short_name)
+        elif source == "greenhouse":
+            sigs = conn.fetch(board=board or term)
         else:
             sigs = conn.fetch(term=term, page=page, query=query)
     except Exception as e:  # noqa: BLE001
@@ -116,7 +123,7 @@ def signal(
 @app.command()
 def forecast(
     query: str = typer.Argument(..., help="Ticker or company name"),
-    driver: str = typer.Option("google_trends", help="google_trends | wikipedia | fred | csv"),
+    driver: str = typer.Option("google_trends", help="google_trends | wikipedia | fred | gdelt | csv"),
     term: Optional[str] = typer.Option(None, help="Search term / FRED series; defaults to top seed term"),
     page: Optional[str] = typer.Option(None, help="Wikipedia article (driver=wikipedia)"),
     geo: str = typer.Option("US"),
@@ -162,6 +169,42 @@ def forecast(
     fname = f"{(ent.ticker or ent.query).upper()}_{res.driver_source}.md"
     md_file = out_path / fname
     md_file.write_text(build_markdown(ent, res), encoding="utf-8")
+    console.print(f"\n[dim]Memo written to {md_file}[/]")
+
+
+@app.command()
+def triangulate(
+    query: str = typer.Argument(..., help="Ticker or company name"),
+    drivers: Optional[str] = typer.Option(
+        None, help="Comma-separated drivers (default: google_trends,wikipedia,gdelt[,fred])"
+    ),
+    geo: str = typer.Option("US"),
+    max_lag: int = typer.Option(4),
+    quarters: int = typer.Option(16),
+    alpha: float = typer.Option(0.20),
+    min_n: int = typer.Option(6),
+    lag_by: str = typer.Option("skill", help="Lag selection: 'skill' or 'corr'"),
+    sign: str = typer.Option("any", help="Constrain lags to 'any' | 'positive' | 'negative'"),
+    out_dir: Optional[str] = typer.Option(None, help="Where to write the Markdown memo"),
+) -> None:
+    """Blend multiple demand signals into one skill-weighted ensemble nowcast."""
+    from .reports.render import build_triangulation_markdown, render_triangulation
+    from .workflows.triangulate import triangulate as _triangulate
+
+    drv = [d.strip() for d in drivers.split(",") if d.strip()] if drivers else None
+    try:
+        ent, res = _triangulate(
+            query, drivers=drv, geo=geo, max_lag=max_lag, quarters=quarters,
+            alpha=alpha, min_n=min_n, lag_by=lag_by, sign=sign,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise _fail(str(e))
+
+    render_triangulation(ent, res, console)
+    out_path = Path(out_dir) if out_dir else REPORTS_DIR
+    out_path.mkdir(parents=True, exist_ok=True)
+    md_file = out_path / f"{(ent.ticker or ent.query).upper()}_triangulation.md"
+    md_file.write_text(build_triangulation_markdown(ent, res), encoding="utf-8")
     console.print(f"\n[dim]Memo written to {md_file}[/]")
 
 

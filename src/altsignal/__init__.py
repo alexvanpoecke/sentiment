@@ -4,7 +4,15 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
-from .models import Entity, ForecastResult, LagStat, Observation, Signal
+from .models import (
+    DriverContribution,
+    Entity,
+    ForecastResult,
+    LagStat,
+    Observation,
+    Signal,
+    TriangulationResult,
+)
 
 __all__ = [
     "Entity",
@@ -12,5 +20,7 @@ __all__ = [
     "Observation",
     "ForecastResult",
     "LagStat",
+    "DriverContribution",
+    "TriangulationResult",
     "__version__",
 ]
