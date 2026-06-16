@@ -1,0 +1,273 @@
+"""Signal -> KPI forecast workflow (the headline example, generalized).
+
+Given a company, a KPI (quarterly revenue from EDGAR) and a demand *driver*
+(Google Trends / Wikipedia / FRED / CSV):
+  1. align both to calendar quarters and take YoY growth
+  2. search lags 0..max_lag for where the driver best leads revenue
+  3. fit OLS at the best lag
+  4. forecast the upcoming quarter with a prediction interval
+  5. walk-forward backtest vs a naive persistence benchmark
+"""
+
+from __future__ import annotations
+
+import csv
+from datetime import date
+from pathlib import Path
+
+from ..config import Settings, get_settings
+from ..entities.resolver import resolve as resolve_entity
+from ..features.align import add_quarters, calendar_quarter_end, to_quarterly, yoy_quarterly
+from ..features.lag import lagged_pairs, scan_lags
+from ..features.stats import fit_ols, mean, pearson
+from ..models import Entity, ForecastResult, Observation, Signal
+from ..registry import get_connector
+
+
+def _trim_signal(sig: Signal, keep: int) -> Signal:
+    obs = sig.sorted()[-keep:]
+    return Signal(
+        entity_key=sig.entity_key,
+        source=sig.source,
+        metric=sig.metric,
+        freq=sig.freq,
+        geo=sig.geo,
+        unit=sig.unit,
+        observations=obs,
+        meta=dict(sig.meta),
+    )
+
+
+def _revenue_levels_and_yoy(sig: Signal) -> tuple[dict[date, float], dict[date, float], int]:
+    """Calendar-quarter-keyed revenue levels and (gap-safe, date-based) YoY growth.
+
+    Returns (levels, yoy, collisions) where ``collisions`` counts fiscal quarters
+    that mapped onto an already-used calendar quarter (the later one is kept).
+    """
+    levels: dict[date, float] = {}
+    collisions = 0
+    for o in sig.sorted():  # ascending: a later fiscal quarter wins a collision
+        k = calendar_quarter_end(o.ts)
+        if k in levels:
+            collisions += 1
+        levels[k] = o.value
+    # `levels` is already ascending (sig.sorted() is ascending and calendar_quarter_end
+    # is monotonic), and is only read by key, so no re-sort is needed.
+    return levels, yoy_quarterly(levels), collisions
+
+
+def _driver_quarterly_yoy(sig: Signal) -> dict[date, float]:
+    # Always aggregate by mean: YoY is scale-invariant, so mean and sum agree for
+    # full quarters, and mean is robust to partial boundary quarters (e.g. an
+    # in-progress current quarter) where a sum would be biased low.
+    q = to_quarterly(sig.series(), agg="mean")
+    return yoy_quarterly(q)
+
+
+def forecast_kpi(
+    entity: Entity,
+    kpi_signal: Signal,
+    driver_signal: Signal,
+    *,
+    driver_label: str,
+    max_lag: int = 4,
+    alpha: float = 0.20,
+    min_n: int = 6,
+) -> ForecastResult:
+    levels, target_yoy, collisions = _revenue_levels_and_yoy(kpi_signal)
+    driver_yoy = _driver_quarterly_yoy(driver_signal)
+
+    res = ForecastResult(
+        entity_key=entity.key,
+        kpi_metric=kpi_signal.metric,
+        kpi_source=kpi_signal.source,
+        driver_metric=driver_signal.metric,
+        driver_source=driver_signal.source,
+        driver_label=driver_label,
+        alpha=alpha,
+    )
+    res.notes.append(
+        f"Revenue concept: {kpi_signal.meta.get('concept', 'n/a')}; "
+        f"driver aggregated to quarters by mean; YoY is date-based (gap-safe)."
+    )
+    if collisions:
+        res.warnings.append(
+            f"{collisions} fiscal quarter(s) collided onto the same calendar quarter "
+            f"(off-calendar fiscal year); kept the later one."
+        )
+    if driver_signal.unit and "index" in (driver_signal.unit or ""):
+        res.notes.append("Driver is a relative 0-100 index; analysis uses YoY of the index.")
+
+    if len(target_yoy) < 3 or len(driver_yoy) < 3:
+        res.warnings.append("Not enough overlapping history to estimate a relationship.")
+        return res
+
+    best_lag, table = scan_lags(driver_yoy, target_yoy, max_lag=max_lag, min_n=min_n)
+    res.lag_table = table
+    res.best_lag = best_lag
+
+    xs, ys, qs = lagged_pairs(driver_yoy, target_yoy, best_lag)
+    res.n_obs = len(xs)
+    if len(xs) < 3:
+        res.warnings.append(f"Only {len(xs)} aligned points at lag {best_lag}; cannot fit.")
+        return res
+
+    r, p, _ = pearson(xs, ys)
+    res.corr, res.corr_p = r, p
+    if res.n_obs < min_n:
+        res.warnings.append(
+            f"Small sample (n={res.n_obs}); estimates are noisy. Treat as directional."
+        )
+    if p > 0.10:
+        res.warnings.append(f"Correlation is weak / not significant (p={p:.2f}).")
+
+    try:
+        reg = fit_ols(xs, ys)
+    except ValueError as exc:
+        res.warnings.append(f"Could not fit regression ({exc}); reporting correlation only.")
+        return res
+    res.slope, res.intercept = reg.slope, reg.intercept
+    res.r2, res.resid_std = reg.r2, reg.resid_std
+
+    # --- forecast the nearest upcoming quarter we have a driver reading for ---
+    last_t = qs[-1]
+    for step in range(1, max_lag + 2):
+        cand = add_quarters(last_t, step)
+        dk = add_quarters(cand, -best_lag)
+        if dk in driver_yoy:
+            res.target_period = cand
+            res.current_driver_yoy = driver_yoy[dk]
+            break
+
+    if res.target_period is not None and res.current_driver_yoy is not None:
+        yhat, lo, hi = reg.predict(res.current_driver_yoy, alpha=alpha)
+        res.predicted_yoy, res.pi_low_yoy, res.pi_high_yoy = yhat, lo, hi
+        base = levels.get(add_quarters(res.target_period, -4))
+        if base is not None:
+            res.base_level = base
+            res.predicted_level = base * (1 + yhat)
+            res.pi_low_level = base * (1 + lo)
+            res.pi_high_level = base * (1 + hi)
+        else:
+            res.warnings.append("No year-ago revenue level available to convert YoY to a $ level.")
+    else:
+        res.warnings.append("No current driver reading at the required lag; cannot project forward.")
+
+    # --- walk-forward backtest vs naive persistence ---
+    # Naive = last year's YoY actual carried forward; look it up by DATE (the true
+    # prior calendar quarter), since `qs` can skip quarters with no driver reading.
+    # Only score folds where that prior quarter actually exists.
+    errs, naive = [], []
+    for i in range(4, len(xs)):
+        prev_q = add_quarters(qs[i], -1)
+        if prev_q not in target_yoy:
+            continue
+        try:
+            reg_i = fit_ols(xs[:i], ys[:i])
+        except ValueError:
+            continue
+        errs.append(abs(reg_i.predict(xs[i])[0] - ys[i]))
+        naive.append(abs(target_yoy[prev_q] - ys[i]))
+    if errs:
+        res.backtest_n = len(errs)
+        res.backtest_mae_yoy = mean(errs)
+        res.backtest_naive_mae_yoy = mean(naive)
+
+    return res
+
+
+# --------------------------------------------------------------------------- #
+# Orchestration: ticker in, (Entity, ForecastResult) out                       #
+# --------------------------------------------------------------------------- #
+def _load_csv_driver(path: str) -> tuple[Signal, str]:
+    rows: list[Observation] = []
+    with open(path, newline="") as f:
+        reader = csv.reader(f)
+        for i, row in enumerate(reader):
+            if len(row) < 2:
+                continue
+            try:
+                d = date.fromisoformat(row[0].strip()[:10])
+                v = float(row[1])
+            except ValueError:
+                if i == 0:
+                    continue  # header
+                raise
+            rows.append(Observation(ts=d, value=v))
+    if not rows:
+        raise ValueError(f"no (date,value) rows parsed from {path}")
+    sig = Signal(
+        entity_key=f"csv:{Path(path).stem}",
+        source="csv",
+        metric="driver",
+        freq="M",
+        observations=rows,
+    )
+    return sig, f"CSV: {Path(path).name}"
+
+
+def _load_driver(
+    entity: Entity, driver: str, term: str | None, page: str | None, geo: str, quarters: int,
+    store, settings,
+) -> tuple[Signal, str]:
+    if driver == "google_trends":
+        t = term or (entity.seed_terms[0] if entity.seed_terms else entity.short_name)
+        conn = get_connector("google_trends", store, settings)
+        sig = conn.fetch(term=t, geo=geo, quarters=quarters)[0]
+        return sig, f'Google Trends: "{t}" ({geo})'
+    if driver == "wikipedia":
+        pg = page or entity.short_name or entity.name
+        conn = get_connector("wikipedia", store, settings)
+        sig = conn.fetch(page=pg, quarters=quarters)[0]
+        return sig, f"Wikipedia pageviews: {pg}"
+    if driver == "fred":
+        if not term:
+            raise ValueError("driver 'fred' needs --term SERIES_ID")
+        conn = get_connector("fred", store, settings)
+        sig = conn.fetch(series_id=term, quarters=quarters)[0]
+        return sig, f"FRED: {term}"
+    raise ValueError(f"unknown driver {driver!r} (use google_trends|wikipedia|fred|csv)")
+
+
+def run_forecast(
+    query: str,
+    *,
+    driver: str = "google_trends",
+    term: str | None = None,
+    page: str | None = None,
+    geo: str = "US",
+    max_lag: int = 4,
+    quarters: int = 16,
+    alpha: float = 0.20,
+    min_n: int = 6,
+    driver_csv: str | None = None,
+    store=None,
+    settings: Settings | None = None,
+) -> tuple[Entity, ForecastResult]:
+    settings = settings or get_settings()
+    edgar = get_connector("edgar", store, settings)
+    entity = resolve_entity(query, settings=settings, store=store, edgar=edgar)
+    if not entity.cik:
+        raise RuntimeError(
+            f"Could not resolve {query!r} to a SEC filer, so there's no KPI (revenue) to forecast."
+        )
+
+    revenue = _trim_signal(edgar.quarterly_revenue(entity.cik), keep=quarters + 5)
+
+    if driver_csv:
+        driver_signal, driver_label = _load_csv_driver(driver_csv)
+    else:
+        driver_signal, driver_label = _load_driver(
+            entity, driver, term, page, geo, quarters, store, settings
+        )
+
+    result = forecast_kpi(
+        entity,
+        revenue,
+        driver_signal,
+        driver_label=driver_label,
+        max_lag=max_lag,
+        alpha=alpha,
+        min_n=min_n,
+    )
+    return entity, result

@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Secrets & local config
+.env
+.env.local
+
+# Data cache & generated outputs (reproducible; do not commit)
+data/*.sqlite
+data/*.db
+data/cache/
+reports_out/*.md
+reports_out/*.html
+!data/.gitkeep
+!reports_out/.gitkeep

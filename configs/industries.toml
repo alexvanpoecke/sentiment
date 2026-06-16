@@ -1,0 +1,97 @@
+# Industry routing table.
+#
+# This is the "think downstream" brain: given a company's SIC code (from SEC),
+# decide WHICH alternative-data signals are relevant and WHAT seed search terms
+# to use. Each [[industry]] block matches one or more SIC codes (exact or by
+# 2/3-digit prefix). The first matching block (most specific prefix wins) is used.
+#
+# Placeholders in seed_terms / queries:
+#   {brand}   -> short company name (e.g. "Winnebago")
+#   {ticker}  -> ticker (e.g. "WGO")
+#
+# `connectors` lists data sources to fan out to (must match a registered source).
+# `macro_series` are FRED series ids relevant to demand for this industry.
+# `subreddits` seed the Reddit sentiment connector.
+
+default_connectors = ["google_trends", "wikipedia", "edgar"]
+default_seed_terms = ["{brand}", "buy {brand}", "{brand} reviews"]
+
+[[industry]]
+key = "rv_towables_powersports"
+label = "RV / Towables / Powersports"
+sic = [3792, 3713, 3716, 3751, 3799]
+seed_terms = ["buy an RV", "RVs for sale", "RV dealer near me", "travel trailer for sale", "{brand}"]
+connectors = ["google_trends", "wikipedia", "edgar", "fred", "reddit"]
+macro_series = ["UMCSENT", "DSPIC96", "GASREGW", "PSAVERT"]
+subreddits = ["GoRVing", "RVLiving", "Camping"]
+notes = "Big-ticket discretionary durable; demand leads shipments. Watch consumer sentiment, gas prices, dealer inventory."
+
+[[industry]]
+key = "autos_oem"
+label = "Automobiles & Light Trucks (OEM)"
+sic = [3711, 3714]
+seed_terms = ["buy a car", "{brand} for sale", "{brand} lease deals", "new {brand}", "{brand} inventory"]
+connectors = ["google_trends", "wikipedia", "edgar", "fred", "reddit"]
+macro_series = ["UMCSENT", "TERMCBAUTO48NS", "GASREGW", "TOTALSA"]
+subreddits = ["cars", "whatcarshouldIbuy"]
+notes = "Add dealer-inventory / listings connector (Phase 3) for days-supply and pricing."
+
+[[industry]]
+key = "auto_dealers"
+label = "Auto Dealers & Marketplaces"
+sic = [5500, 5511, 5521]
+seed_terms = ["used cars near me", "{brand}", "cars for sale", "best car deals"]
+connectors = ["google_trends", "wikipedia", "edgar", "fred"]
+macro_series = ["UMCSENT", "TERMCBAUTO48NS", "TOTALSA"]
+
+[[industry]]
+key = "software_internet"
+label = "Software / Internet Services"
+sic = [7372, 7370, 7371, 7374, 7389]
+seed_terms = ["{brand}", "{brand} login", "{brand} pricing", "{brand} alternative"]
+connectors = ["google_trends", "wikipedia", "edgar", "reddit"]
+macro_series = ["NASDAQCOM"]
+subreddits = ["technology", "SaaS"]
+notes = "Web-traffic (SimilarWeb) and job-postings (Greenhouse/Lever) connectors are high-signal here (Phase 2/3)."
+
+[[industry]]
+key = "ecommerce_retail"
+label = "Retail / E-commerce"
+sic = [5200, 5211, 5311, 5331, 5399, 5651, 5661, 5731, 5912, 5940, 5961, 5990]
+seed_terms = ["{brand}", "{brand} coupon", "{brand} near me", "{brand} sale"]
+connectors = ["google_trends", "wikipedia", "edgar", "fred", "reddit"]
+macro_series = ["RSXFS", "UMCSENT", "PCEC96"]
+notes = "Shipping/imports (bill-of-lading) and store-traffic connectors add a lot here (Phase 3)."
+
+[[industry]]
+key = "restaurants"
+label = "Restaurants & Food Service"
+sic = [5812, 5810, 5813]
+seed_terms = ["{brand} menu", "{brand} near me", "{brand} delivery", "{brand}"]
+connectors = ["google_trends", "wikipedia", "edgar", "fred"]
+macro_series = ["MRTSSM7225USN", "UMCSENT"]
+
+[[industry]]
+key = "airlines_travel"
+label = "Airlines & Travel"
+sic = [4512, 4522, 4581, 7011, 4700]
+seed_terms = ["{brand} flights", "cheap flights", "{brand}", "book a flight"]
+connectors = ["google_trends", "wikipedia", "edgar", "fred"]
+macro_series = ["UMCSENT", "DSPIC96"]
+notes = "TSA throughput (public) and flight-schedule connectors are strong demand proxies (Phase 3)."
+
+[[industry]]
+key = "semiconductors"
+label = "Semiconductors & Equipment"
+sic = [3674, 3559, 3827]
+seed_terms = ["{brand}", "{brand} gpu", "{brand} chip"]
+connectors = ["google_trends", "wikipedia", "edgar"]
+macro_series = ["IPG3344S", "NASDAQCOM"]
+
+[[industry]]
+key = "homebuilders"
+label = "Homebuilders & Building Products"
+sic = [1531, 1520, 2451, 2452, 3250]
+seed_terms = ["new homes for sale", "{brand} homes", "buy a house"]
+connectors = ["google_trends", "wikipedia", "edgar", "fred"]
+macro_series = ["HOUST", "MORTGAGE30US", "UMCSENT"]
