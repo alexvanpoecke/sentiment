@@ -12,10 +12,12 @@ Given a company, a KPI (quarterly revenue from EDGAR) and a demand *driver*
 from __future__ import annotations
 
 import csv
+import re
 from datetime import date
 from pathlib import Path
 
 from ..config import Settings, get_settings
+from ..connectors.base import ConnectorError
 from ..entities.resolver import resolve as resolve_entity
 from ..features.align import add_quarters, calendar_quarter_end, to_quarterly, yoy_quarterly
 from ..features.lag import lagged_pairs, scan_lags
@@ -231,6 +233,33 @@ def _load_csv_driver(path: str) -> tuple[Signal, str]:
     return sig, f"CSV: {Path(path).name}"
 
 
+def _wikipedia_page_candidates(entity: Entity, page: str | None) -> list[str]:
+    """Article title candidates from most to least specific. If `page` is explicit, use only that."""
+    if page:
+        return [page.strip()]
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def add(t: str) -> None:
+        t = t.strip()
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+
+    add(entity.short_name)
+    # Strip "/ STATE" suffix that SEC appends (e.g. "Rivian Automotive / DE")
+    stripped = re.split(r"\s+/", entity.short_name)[0].strip()
+    add(stripped)
+    # First two words (e.g. "Rivian Automotive")
+    words = stripped.split()
+    if len(words) > 2:
+        add(" ".join(words[:2]))
+    # First word only (e.g. "Rivian")
+    if words:
+        add(words[0])
+    return out
+
+
 def _load_driver(
     entity: Entity, driver: str, term: str | None, page: str | None, geo: str, quarters: int,
     store, settings,
@@ -241,10 +270,21 @@ def _load_driver(
         sig = conn.fetch(term=t, geo=geo, quarters=quarters)[0]
         return sig, f'Google Trends: "{t}" ({geo})'
     if driver == "wikipedia":
-        pg = page or entity.short_name or entity.name
         conn = get_connector("wikipedia", store, settings)
-        sig = conn.fetch(page=pg, quarters=quarters)[0]
-        return sig, f"Wikipedia pageviews: {pg}"
+        candidates = _wikipedia_page_candidates(entity, page)
+        last_exc: ConnectorError | None = None
+        for pg in candidates:
+            try:
+                sig = conn.fetch(page=pg, quarters=quarters)[0]
+                return sig, f"Wikipedia pageviews: {pg}"
+            except ConnectorError as exc:
+                if exc.status == 404:
+                    last_exc = exc
+                    continue
+                raise
+        raise last_exc or ConnectorError(
+            f"wikipedia: no article found for {entity.short_name!r}", source="wikipedia"
+        )
     if driver == "fred":
         if not term:
             raise ValueError("driver 'fred' needs --term SERIES_ID")

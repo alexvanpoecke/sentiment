@@ -91,9 +91,19 @@ class Entity:
             "ltd", "llc", "lp", "plc", "holdings", "group", "sa", "ag", "nv",
         }
         words = (self.name or self.query).replace(",", " ").split()
-        # Drop trailing state markers like /MN/ or /DE/.
-        while words and words[-1].startswith("/") and words[-1].endswith("/"):
-            words.pop()
+        # Drop trailing state markers SEC appends, in either form it emits:
+        # one token ("ACME CORP /DE/") or two tokens ("RIVIAN AUTOMOTIVE / DE").
+        while words:
+            last = words[-1]
+            if last.startswith("/") and last.endswith("/") and last[1:-1].isalpha():
+                words.pop()
+            elif len(words) >= 2 and words[-2] == "/" and len(last) == 2 and last.isalpha():
+                words.pop()
+                words.pop()
+            elif last == "/":
+                words.pop()
+            else:
+                break
         # Drop trailing corporate-form tokens (case/punctuation-insensitive).
         while words and words[-1].strip(".").lower() in forms:
             words.pop()
